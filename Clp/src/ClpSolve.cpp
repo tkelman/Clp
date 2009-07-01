@@ -45,6 +45,10 @@
 #include "ClpCholeskyTaucs.hpp"
 #define FAST_BARRIER
 #endif
+#ifdef MUMPS_BARRIER
+#include "ClpCholeskyMumps.hpp"
+#define FAST_BARRIER
+#endif
 #ifdef COIN_DEVELOP
 #ifndef FAST_BARRIER
 static int numberBarrier=0;
@@ -1959,6 +1963,15 @@ ClpSimplex::initialSolve(ClpSolve & options)
       }
       break;
 #endif
+#ifdef MUMPS_BARRIER
+    case 6:
+      {
+	ClpCholeskyMumps * cholesky = new ClpCholeskyMumps();
+	barrier.setCholesky(cholesky);
+	assert (!doKKT);
+      }
+      break;
+#endif
     }
     int numberRows = model2->numberRows();
     int numberColumns = model2->numberColumns();
@@ -2779,6 +2792,8 @@ ClpSimplexProgress::looping()
   if (!model_)
     return -1;
   double objective = model_->rawObjectiveValue();
+  if (model_->algorithm()<0)
+    objective -= model_->bestPossibleImprovement();
   double infeasibility;
   double realInfeasibility=0.0;
   int numberInfeasibilities;

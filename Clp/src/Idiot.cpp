@@ -824,7 +824,7 @@ Idiot::solve2(CoinMessageHandler * handler,const CoinMessages * messages)
 #endif
     }
     if (iteration>50&&n==numberAway&&result.infeas<1.0e-4) {
-      printf("infeas small %g\n",result.infeas);
+      //printf("infeas small %g\n",result.infeas);
       break; // not much happening
     }
     if (lightWeight_==1&&iteration>10&&result.infeas>1.0&&maxIts!=7) {
@@ -1281,6 +1281,13 @@ Idiot::crossOver(int mode)
     presolve=0;
   }
 #endif
+#ifdef FEB_TRY
+  int savePerturbation = model_->perturbation();
+  int saveOptions = model_->specialOptions();
+  model_->setSpecialOptions(saveOptions|8192);
+  if (savePerturbation_==50)
+    model_->setPerturbation(56);
+#endif
   model_->createStatus();
   /* addAll
      0 - chosen,all used, all 
@@ -1471,7 +1478,12 @@ Idiot::crossOver(int mode)
     }
     if (model_) {
       if (!wantVector) {
+	//#define TWO_GOES
+#ifndef TWO_GOES
 	model_->primal(1);
+#else
+	model_->primal(1+11);
+#endif
       } else {
 	ClpMatrixBase * matrix = model_->clpMatrix();
 	ClpPackedMatrix * clpMatrix = dynamic_cast< ClpPackedMatrix*>(matrix);
@@ -1603,6 +1615,10 @@ Idiot::crossOver(int mode)
     delete [] saveUpper;
     delete [] saveLower;
   }
+#ifdef FEB_TRY
+  model_->setSpecialOptions(saveOptions);
+  model_->setPerturbation(savePerturbation);
+#endif
   return ;
 }
 #endif
