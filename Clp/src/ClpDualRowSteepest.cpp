@@ -228,7 +228,7 @@ ClpDualRowSteepest::pivotRow()
   // But cap
   tolerance = CoinMin(1000.0,tolerance);
   tolerance *= tolerance; // as we are using squares
-  double saveTolerance = tolerance;
+  bool toleranceChanged = false;
   double * solution = model_->solutionRegion();
   double * lower = model_->lowerRegion();
   double * upper = model_->upperRegion();
@@ -236,14 +236,6 @@ ClpDualRowSteepest::pivotRow()
   //#define COLUMN_BIAS 4.0
   //#define FIXED_BIAS 10.0
   if (lastPivotRow>=0&&lastPivotRow<model_->numberRows()) {
-#if defined (__MINGW32__) || defined(__CYGWIN32__)
-    if (model_->numberIterations()<0)
-      printf("aab_p it %d\n",model_->numberIterations());
-#endif
-#if defined (__MINGW32__) || defined(__CYGWIN32__)
-    if (model_->numberIterations()<0)
-      printf("aab_p it %d\n",model_->numberIterations());
-#endif
 #ifdef COLUMN_BIAS 
     int numberColumns = model_->numberColumns();
 #endif
@@ -283,16 +275,11 @@ k
     }
     number = infeasible_->getNumElements();
   }
-#if defined(__MINGW32__) || defined(__CYGWIN32__)
-  if (model_->numberIterations()<0)
-    printf("aac_p it %d\n",model_->numberIterations());
-#endif
-  bool bToleranceIncreased = false;
   if(model_->numberIterations()<model_->lastBadIteration()+200) {
     // we can't really trust infeasibilities if there is dual error
     if (model_->largestDualError()>model_->largestPrimalError()) {
       tolerance *= CoinMin(model_->largestDualError()/model_->largestPrimalError(),1000.0);
-      bToleranceIncreased = true;
+      toleranceChanged=true;
     }
   }
   int numberWanted;
@@ -302,7 +289,8 @@ k
     numberWanted = CoinMax(2000,number/8);
   } else {
     int numberElements = model_->factorization()->numberElements();
-    double ratio = (double) numberElements/(double) model_->numberRows();
+    double ratio = static_cast<double> (numberElements)/
+      static_cast<double> (model_->numberRows());
     numberWanted = CoinMax(2000,number/8);
     if (ratio<1.0) {
       numberWanted = CoinMax(2000,number/20);
@@ -311,7 +299,7 @@ k
       if (ratio>number)
 	numberWanted=number+1;
       else
-	numberWanted = CoinMax(2000,(int) ratio);
+	numberWanted = CoinMax(2000,static_cast<int> (ratio));
     }
   }
   if (model_->largestPrimalError()>1.0e-3)
@@ -321,8 +309,8 @@ k
   int start[4];
   start[1]=number;
   start[2]=0;
-  double dstart = ((double) number) * model_->randomNumberGenerator()->randomDouble();
-  start[0]=(int) dstart;
+  double dstart = static_cast<double> (number) * model_->randomNumberGenerator()->randomDouble();
+  start[0]=static_cast<int> (dstart);
   start[3]=start[0];
   //double largestWeight=0.0;
   //double smallestWeight=1.0e100;
@@ -385,7 +373,7 @@ k
       break;
   }
   //printf("smallest %g largest %g\n",smallestWeight,largestWeight);
-  if (chosenRow<0&& tolerance>saveTolerance && bToleranceIncreased) {
+  if (chosenRow<0 && toleranceChanged) {
     // won't line up with checkPrimalSolution - do again
     double saveError = model_->largestDualError();
     model_->setLargestDualError(0.0);
@@ -498,13 +486,13 @@ ClpDualRowSteepest::updateWeights(CoinIndexedVector * input,
     ft_count_in+= updatedColumn->getNumElements();
     up_count_in+= spare->getNumElements();
 #endif
-    if (permute) {
+    if (permute||true) {
 #if CLP_DEBUG>2
       printf("REGION before %d els\n",spare->getNumElements());
       spare->print();
 #endif
       model_->factorization()->updateTwoColumnsFT(spare2,updatedColumn,
-						  spare,true);
+						  spare,permute!=NULL);
 #if CLP_DEBUG>2
       printf("REGION after %d els\n",spare->getNumElements());
       spare->print();
@@ -848,7 +836,7 @@ ClpDualRowSteepest::saveWeights(ClpSimplex * model,int mode)
 	state_=-1;
       }
     }
-  } else if (mode==2||mode==4||mode==5) {
+  } else if (mode==2||mode==4||mode>=5) {
     // restore
     if (!weights_||state_==-1||mode==5) {
       // initialize weights
@@ -899,7 +887,7 @@ ClpDualRowSteepest::saveWeights(ClpSimplex * model,int mode)
 	array[i]=weights_[i];
 	which[i]=pivotVariable[i];
       }
-    } else {
+    } else if (mode!=6) {
       int * which = alternateWeights_->getIndices();
       CoinIndexedVector * rowArray3 = model_->rowArray(3);
       rowArray3->clear();
@@ -909,8 +897,8 @@ ClpDualRowSteepest::saveWeights(ClpSimplex * model,int mode)
 	back[i]=-1;
       if (mode!=4) {
 	// save
- CoinMemcpyN(which,	numberRows,savedWeights_->getIndices());
- CoinMemcpyN(weights_,	numberRows,savedWeights_->denseVector());
+	CoinMemcpyN(which,	numberRows,savedWeights_->getIndices());
+	CoinMemcpyN(weights_,	numberRows,savedWeights_->denseVector());
       } else {
 	// restore
 	//memcpy(which,savedWeights_->getIndices(),
@@ -936,6 +924,27 @@ ClpDualRowSteepest::saveWeights(ClpSimplex * model,int mode)
 	  // odd
 	  weights_[i]=1.0;
 	}
+      }
+    } else {
+      // mode 6 - scale back weights as primal errors
+      double primalError = model_->largestPrimalError();
+      double allowed ;
+      if (primalError>1.0e3)
+	allowed=10.0;
+      else if (primalError>1.0e2)
+	allowed=50.0;
+      else if (primalError>1.0e1)
+	allowed=100.0;
+      else
+	allowed=1000.0;
+      double allowedInv =1.0/allowed;
+      for (i=0;i<numberRows;i++) {
+	double value = weights_[i];
+	if (value<allowedInv)
+	  value = allowedInv;
+	else if (value>allowed)
+	  value=allowed;
+	weights_[i]=allowed;
       }
     }
     state_=0;

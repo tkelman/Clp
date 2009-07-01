@@ -241,8 +241,9 @@ public:
       Returns -1 if not initialize and no effect
       Fills in changeVector which can be used to see if unbounded
       and cost of change vector
+      If 2 sets to original (just changed)
   */
-  int changeBounds(bool initialize,CoinIndexedVector * outputArray,
+  int changeBounds(int initialize,CoinIndexedVector * outputArray,
 		   double & changeCost);
   /** As changeBounds but just changes new bounds for a single variable.
       Returns true if change */
@@ -293,7 +294,7 @@ public:
   void gutsOfDual(int ifValuesPass,double * & saveDuals,int initialStatus,
                   ClpDataSave & saveData);
   //int dual2(int ifValuesPass,int startFinishOptions=0);
-  void resetFakeBounds();
+  void resetFakeBounds(int type);
   
   //@}
 };

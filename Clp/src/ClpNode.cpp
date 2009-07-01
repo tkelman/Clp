@@ -30,6 +30,7 @@ ClpNode::ClpNode () :
   fixed_(NULL),
   sequence_(1),
   numberInfeasibilities_(0),
+  depth_(0),
   numberFixed_(0),
   flags_(0),
   maximumFixed_(0),
@@ -59,6 +60,7 @@ ClpNode::ClpNode (ClpSimplex * model, const ClpNodeStuff * stuff, int depth) :
   fixed_(NULL),
   sequence_(1),
   numberInfeasibilities_(0),
+  depth_(0),
   numberFixed_(0),
   flags_(0),
   maximumFixed_(0),
@@ -82,6 +84,7 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
   int numberColumns = model->numberColumns();
   int numberTotal = numberRows+numberColumns;
   int maximumTotal = maximumRows_+maximumColumns_;
+  depth_ = depth;
   // save stuff
   objectiveValue_ = model->objectiveValue()*model->optimizationDirection();
   estimatedSolution_ = objectiveValue_;
@@ -90,7 +93,7 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
     maximumRows_=CoinMax(maximumRows_,numberRows);
     maximumColumns_=CoinMax(maximumColumns_,numberColumns);
     maximumTotal = maximumRows_+maximumColumns_;
-    factorization_ = new ClpFactorization(*model->factorization());
+    factorization_ = new ClpFactorization(*model->factorization(),numberRows);
     status_ = CoinCopyOfArrayPartial(model->statusArray(),maximumTotal,numberTotal);
     primalSolution_ = CoinCopyOfArrayPartial(model->solutionRegion(),maximumTotal,numberTotal);
     dualSolution_ = CoinCopyOfArrayPartial(model->djRegion(),maximumTotal,numberTotal); //? has duals as well?
@@ -162,8 +165,10 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
 	CoinMemcpyN(model->dualRowSolution(),numberRows,dualSolution_+numberColumns); 
       }
       pivotVariables_ = new int [maximumRows_];
-      if (model->pivotVariable())
+      if (model->pivotVariable()&&model->numberRows()==numberRows)
 	CoinMemcpyN(model->pivotVariable(),numberRows,pivotVariables_); 
+      else
+	CoinFillN(pivotVariables_,numberRows,-1);
     }
   }
   numberFixed_=0;
@@ -177,13 +182,13 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
   int iColumn;
   sequence_=-1;
   double integerTolerance = stuff->integerTolerance_;
-  double mostAway=integerTolerance;
+  double mostAway=0.0;
   sumInfeasibilities_ = 0.0;
   numberInfeasibilities_ = 0;
   int nFix=0;
   double gap = CoinMax(model->dualObjectiveLimit()-objectiveValue_,1.0e-4);
-#define PSEUDO 2
-#if PSEUDO==1
+#define PSEUDO 3
+#if PSEUDO==1||PSEUDO==2
   // Column copy of matrix
   ClpPackedMatrix * matrix = model->clpScaledMatrix();
   if (!matrix)
@@ -195,7 +200,45 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
   const double *objective = model->costRegion() ;
   double direction = model->optimizationDirection();
   const double * dual = dualSolution_+numberColumns;
-#elif PSEUDO==2
+#if PSEUDO==2
+  double * activeWeight = new double [numberRows];
+  const double * rowLower = model->rowLower();
+  const double * rowUpper = model->rowUpper();
+  const double * rowActivity = model->primalRowSolution();
+  double tolerance = 1.0e-6;
+  for (int iRow = 0;iRow<numberRows;iRow++) {
+    // could use pi to see if active or activity
+    if (rowActivity[iRow]>rowUpper[iRow]-tolerance
+	||rowActivity[iRow]<rowLower[iRow]+tolerance) {
+      activeWeight[iRow]=0.0;
+    } else {
+      activeWeight[iRow]=-1.0;
+    }
+  }
+  for (int iColumn=0;iColumn<numberColumns;iColumn++) {
+    if (integerType[iColumn]) {
+      double value = solution[iColumn];
+      if (fabs(value-floor(value+0.5))>1.0e-6) {
+	CoinBigIndex start = columnStart[iColumn];
+	CoinBigIndex end = start + columnLength[iColumn];
+	for (CoinBigIndex j=start;j<end;j++) {
+	  int iRow = row[j];
+	  if (activeWeight[iRow]>=0.0)
+	    activeWeight[iRow] += 1.0;
+	}
+      }
+    }
+  }
+  for (int iRow = 0;iRow<numberRows;iRow++) {
+    if (activeWeight[iRow]>0.0) {
+      // could use pi
+      activeWeight[iRow] = 1.0/activeWeight[iRow];
+    } else {
+      activeWeight[iRow]=0.0;
+    }
+  }
+#endif
+#elif PSEUDO==3
   const double * downPseudo = stuff->downPseudo_;
   const int * numberDown = stuff->numberDown_;
   const int * numberDownInfeasible = stuff->numberDownInfeasible_;
@@ -207,21 +250,21 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
   for (iColumn=0;iColumn<numberColumns;iColumn++) {
     if (integerType[iColumn]) {
       double value = solution[iColumn];
-      value = max(value,(double) lower[iColumn]);
-      value = min(value,(double) upper[iColumn]);
+      value = CoinMax(value,static_cast<double> (lower[iColumn]));
+      value = CoinMin(value,static_cast<double> (upper[iColumn]));
       double nearest = floor(value+0.5);
       if (fabs(value-nearest)>integerTolerance) {
 	numberInfeasibilities_++;
 	sumInfeasibilities_ += fabs(value-nearest);
-#if PSEUDO==1
+#if PSEUDO==1 || PSEUDO ==2
 	double upValue = 0.0;
 	double downValue = 0.0;
-	double value2 = direction*objective[iColumn];
+	double value2 = objective ? direction*objective[iColumn] : 0.0;
 	if (value2) {
 	  if (value2>0.0)
-	    upValue += value2;
+	    upValue += 1.5*value2;
 	  else
-	    downValue -= value2;
+	    downValue -= 1.5*value2;
 	}
 	CoinBigIndex start = columnStart[iColumn];
 	CoinBigIndex end = columnStart[iColumn]+columnLength[iColumn];
@@ -230,12 +273,18 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
 	  value2 = -dual[iRow];
 	  if (value2) {
 	    value2 *= element[j];
+#if PSEUDO==2
+	    assert (activeWeight[iRow]>0.0||fabs(dual[iRow])<1.0e-6);
+	    value2 *= activeWeight[iRow];
+#endif
 	    if (value2>0.0)
 	      upValue += value2;
 	    else
 	      downValue -= value2;
 	  }
 	}
+	upValue = CoinMax(upValue,1.0e-8);
+	downValue = CoinMax(downValue,1.0e-8);
 	upValue *= ceil(value)-value;
 	downValue *= value-floor(value);
 	double infeasibility;
@@ -244,9 +293,22 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
 	else
 	  infeasibility = 0.1*CoinMax(upValue,downValue)+
 	    0.9*CoinMin(upValue,downValue) + integerTolerance;
-#elif PSEUDO==2
-	double upValue = (ceil(value)-value)*(upPseudo[iInteger]/(1.0+numberUp[iInteger]+numberUpInfeasible[iInteger]));
-	double downValue = (value-floor(value))*(downPseudo[iInteger]/(1.0+numberDown[iInteger]+numberDownInfeasible[iInteger]));
+#elif PSEUDO==3
+	// Extra 100% for infeasible branches
+	double upValue = (ceil(value)-value)*(upPseudo[iInteger]/
+					      (1.0+numberUp[iInteger]));
+	if (numberUp[iInteger]) {
+	  double ratio = 1.0+static_cast<double>(numberUpInfeasible[iInteger])/
+	    static_cast<double>(numberUp[iInteger]);
+	  upValue *= ratio;
+	}
+	double downValue = (value-floor(value))*(downPseudo[iInteger]/
+						 (1.0+numberDown[iInteger]));
+	if (numberDown[iInteger]) {
+	  double ratio = 1.0+static_cast<double>(numberDownInfeasible[iInteger])/
+	    static_cast<double>(numberDown[iInteger]);
+	  downValue *= ratio;
+	}
 	double infeasibility;
 	if (depth>1000)
 	  infeasibility = CoinMax(upValue,downValue)+integerTolerance;
@@ -257,6 +319,7 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
 #else
 	double infeasibility = fabs(value-nearest);
 #endif
+	assert (infeasibility>0.0);
 	if (infeasibility>mostAway) {
 	  mostAway=infeasibility;
 	  sequence_=iColumn;
@@ -308,6 +371,9 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
       iInteger++;
     }
   }
+#if PSEUDO == 2
+  delete [] activeWeight;
+#endif
   if (lower_) {
     // save bounds
     if (iInteger>maximumIntegers_) {
@@ -320,8 +386,8 @@ ClpNode::gutsOfConstructor (ClpSimplex * model, const ClpNodeStuff * stuff,
     iInteger=0;
     for (iColumn=0;iColumn<numberColumns;iColumn++) {
       if (integerType[iColumn]) {
-	lower_[iInteger]=(int) lower[iColumn];
-	upper_[iInteger]=(int) upper[iColumn];
+	lower_[iInteger]=static_cast<int> (lower[iColumn]);
+	upper_[iInteger]=static_cast<int> (upper[iColumn]);
 	iInteger++;
       }
     }
@@ -456,9 +522,9 @@ ClpNode::applyNode(ClpSimplex * model, int doBoundsEtc )
     for (int iColumn=0;iColumn<numberColumns;iColumn++) {
       if (integerType[iColumn]) {
 	iInteger++;
-	if (lower_[iInteger]!=(int) lower[iColumn])
+	if (lower_[iInteger]!=static_cast<int> (lower[iColumn]))
 	  model->setColumnLower(iColumn,lower_[iInteger]);
-	if (upper_[iInteger]!=(int) upper[iColumn])
+	if (upper_[iInteger]!=static_cast<int> (upper[iColumn]))
 	  model->setColumnUpper(iColumn,upper_[iInteger]);
       }
     }
@@ -496,10 +562,24 @@ ClpNode::applyNode(ClpSimplex * model, int doBoundsEtc )
     model->setObjectiveValue(objectiveValue_);
   }
 }
+// Choose a new variable
+void 
+ClpNode::chooseVariable(ClpSimplex * model, ClpNodeStuff * info)
+{
+#if 0
+  int way=branchState_.firstBranch;
+  if (branchState_.branch>0)
+    way=1-way;
+  assert (!branchState_.branch);
+  // We need to use pseudo costs to choose a variable
+  int numberColumns = model->numberColumns();
+#endif
+}
 // Fix on reduced costs
 int 
 ClpNode::fixOnReducedCosts(ClpSimplex * model)
 {
+  
   return 0;
 }
 /* Way for integer variable -1 down , +1 up */
@@ -608,8 +688,8 @@ ClpNodeStuff::operator=(const ClpNodeStuff& rhs)
     nBound_ = 0;
     saveOptions_ = rhs.saveOptions_;
     solverOptions_ = rhs.solverOptions_;
-    if (nDepth_>=0) {
-      int n = (1<<nDepth_)+1+nDepth_;
+    int n = maximumNodes();
+    if (n) {
       for (int i=0;i<n;i++) 
 	delete nodeInfo_[i];
       delete [] nodeInfo_;
@@ -662,12 +742,25 @@ ClpNodeStuff::~ClpNodeStuff ()
   delete [] numberUp_;
   delete [] numberDownInfeasible_;
   delete [] numberUpInfeasible_;
-  if (nDepth_>=0) {
-    int n = (1<<nDepth_)+1+nDepth_;
+  int n = maximumNodes();
+  if (n) {
     for (int i=0;i<n;i++) 
       delete nodeInfo_[i];
     delete [] nodeInfo_;
   }
+}
+// Return maximum number of nodes
+int 
+ClpNodeStuff::maximumNodes() const
+{
+  int n;
+  if ((solverOptions_&32)==0) 
+    n = (1<<nDepth_)+1+nDepth_;
+  else if (nDepth_) 
+    n = 1+1+nDepth_;
+  else
+    n = 0;
+  return n;
 }
 /* Fill with pseudocosts */
 void 
@@ -692,10 +785,10 @@ ClpNodeStuff::fillPseudoCosts(const double * down, const double * up,
   // scale
   for (int i=0;i<number;i++) {
     int n;
-    n = numberDown_[i]+numberDownInfeasible_[i];
+    n = numberDown_[i];
     if (n)
       downPseudo_[i] *= n;
-    n = numberUp_[i]+numberUpInfeasible_[i];
+    n = numberUp_[i];
     if (n)
       upPseudo_[i] *= n;
   }
@@ -704,16 +797,16 @@ ClpNodeStuff::fillPseudoCosts(const double * down, const double * up,
 void 
 ClpNodeStuff::update(int way,int sequence,double change,bool feasible)
 {
+  assert (numberDown_[sequence]>=numberDownInfeasible_[sequence]);
+  assert (numberUp_[sequence]>=numberUpInfeasible_[sequence]);
   if (way<0) {
-    if (feasible)
-      numberDown_[sequence]++;
-    else
+    numberDown_[sequence]++;
+    if (!feasible)
       numberDownInfeasible_[sequence]++;
     downPseudo_[sequence] += CoinMax(change,1.0e-12);
   } else {
-    if (feasible)
-      numberUp_[sequence]++;
-    else
+    numberUp_[sequence]++;
+    if (!feasible)
       numberUpInfeasible_[sequence]++;
     upPseudo_[sequence] += CoinMax(change,1.0e-12);
   }

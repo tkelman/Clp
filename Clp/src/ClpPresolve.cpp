@@ -6,7 +6,7 @@
 
 #include <stdio.h>
 
-#include <assert.h>
+#include <cassert>
 #include <iostream>
 
 #include "CoinHelperFunctions.hpp"
@@ -440,7 +440,10 @@ const CoinPresolveAction *ClpPresolve::presolve(CoinPresolveMatrix *prob)
     const bool slackd = doSingleton();
     const bool doubleton = doDoubleton();
     const bool tripleton = doTripleton();
+    //#define NO_FORCING
+#ifndef NO_FORCING
     const bool forcing = doForcing();
+#endif
     const bool ifree = doImpliedFree();
     const bool zerocost = doTighten();
     const bool dupcol = doDupcol();
@@ -476,7 +479,16 @@ const CoinPresolveAction *ClpPresolve::presolve(CoinPresolveMatrix *prob)
     check_sol(prob,1.0e0);
 #endif
     if (dupcol) {
-      //paction_ = dupcol_action::presolve(prob, paction_);
+      // maybe allow integer columns to be checked
+      if ((presolveActions_&512)!=0)
+	prob->setPresolveOptions(prob->presolveOptions()|1);
+      paction_ = dupcol_action::presolve(prob, paction_);
+    }
+    if (duprow) {
+      paction_ = duprow_action::presolve(prob, paction_);
+    }
+    if (doGubrow()) {
+      paction_ = gubrow_action::presolve(prob, paction_);
     }
 
     if ((presolveActions_&16384)!=0)
@@ -493,9 +505,23 @@ const CoinPresolveAction *ClpPresolve::presolve(CoinPresolveMatrix *prob)
 #endif
       const CoinPresolveAction * const paction0 = paction_;
       // look for substitutions with no fill
+      //#define IMPLIED 3
+#ifdef IMPLIED
+      int fill_level=3;
+#define IMPLIED2 99
+#if IMPLIED!=3
+#if IMPLIED>2&&IMPLIED<11
+      fill_level=IMPLIED;
+      printf("** fill_level == %d !\n",fill_level);
+#endif
+#if IMPLIED>11&&IMPLIED<21
+      fill_level=-(IMPLIED-10);
+      printf("** fill_level == %d !\n",fill_level);
+#endif
+#endif
+#else
       int fill_level=2;
-      //fill_level=10;
-      //printf("** fill_level == 10 !\n");
+#endif
       int whichPass=0;
       while (1) {
 	whichPass++;
@@ -533,15 +559,16 @@ const CoinPresolveAction *ClpPresolve::presolve(CoinPresolveMatrix *prob)
 	  if (prob->status_)
 	    break;
 	}
-
+#ifndef NO_FORCING
 	if (forcing) {
 	  paction_ = forcing_constraint_action::presolve(prob, paction_);
 	  if (prob->status_)
 	    break;
 	}
+#endif
 
 	if (ifree&&(whichPass%5)==1) {
-	paction_ = implied_free_action::presolve(prob, paction_,fill_level);
+	  paction_ = implied_free_action::presolve(prob, paction_,fill_level);
 	if (prob->status_)
 	  break;
 	}
@@ -641,8 +668,15 @@ const CoinPresolveAction *ClpPresolve::presolve(CoinPresolveMatrix *prob)
 	    break;
 	  const CoinPresolveAction * const paction2 = paction_;
 	  if (ifree) {
-	    //int fill_level=0; // switches off substitution
-	    paction_ = implied_free_action::presolve(prob, paction_,fill_level);
+#ifdef IMPLIED
+#if IMPLIED2 ==0
+	    int fill_level=0; // switches off substitution
+#elif IMPLIED2!=99
+	    int fill_level=IMPLIED2;
+#endif
+#endif
+	    if ((itry&1)==0)
+	      paction_ = implied_free_action::presolve(prob, paction_,fill_level);
 	    if (prob->status_)
 	      break;
 	  }
@@ -651,7 +685,13 @@ const CoinPresolveAction *ClpPresolve::presolve(CoinPresolveMatrix *prob)
 	}
       } else if (ifree) {
 	// just free
+#ifdef IMPLIED
+#if IMPLIED2 ==0
 	int fill_level=0; // switches off substitution
+#elif IMPLIED2!=99
+	int fill_level=IMPLIED2;
+#endif
+#endif
 	paction_ = implied_free_action::presolve(prob, paction_,fill_level);
 	if (prob->status_)
 	  break;
@@ -798,7 +838,7 @@ void ClpPresolve::postsolve(CoinPostsolveMatrix &prob)
 #endif
   
   while (paction) {
-#if	PRESOLVE_DEBUG
+#if PRESOLVE_DEBUG
     printf("POSTSOLVING %s\n", paction->name());
 #endif
 
@@ -958,7 +998,7 @@ CoinPrePostsolveMatrix::CoinPrePostsolveMatrix(const ClpSimplex * si,
     messages_()
 
 {
-  bulk0_ = (CoinBigIndex) (bulkRatio_*nelems_in);
+  bulk0_ = static_cast<CoinBigIndex> (bulkRatio_*nelems_in);
   hrow_  = new int   [bulk0_];
   colels_ = new double[bulk0_];
   si->getDblParam(ClpObjOffset,originalOffset_);
@@ -1054,7 +1094,6 @@ CoinPresolveMatrix::CoinPresolveMatrix(int ncols0_in,
   nextRowsToDo_(new int[nrows_in]),
   numberNextRowsToDo_(0),
   presolveOptions_(0)
-
 {
   const int bufsize = bulk0_;
 
@@ -1071,27 +1110,29 @@ CoinPresolveMatrix::CoinPresolveMatrix(int ncols0_in,
   // Do the copy here to try to avoid running out of memory.
 
   const CoinBigIndex * start = m->getVectorStarts();
-  const int * length = m->getVectorLengths();
   const int * row = m->getIndices();
   const double * element = m->getElements();
   int icol,nel=0;
   mcstrt_[0]=0;
+  ClpDisjointCopyN(m->getVectorLengths(),ncols_,  hincol_);
   for (icol=0;icol<ncols_;icol++) {
-    int j;
-    for (j=start[icol];j<start[icol]+length[icol];j++) {
+    CoinBigIndex j;
+    for (j=start[icol];j<start[icol]+hincol_[icol];j++) {
       hrow_[nel]=row[j];
-      colels_[nel++]=element[j];
+      if (fabs(element[j])>ZTOLDP)
+	colels_[nel++]=element[j];
     }
     mcstrt_[icol+1]=nel;
+    hincol_[icol]=nel-mcstrt_[icol];
   }
-  assert(mcstrt_[ncols_] == nelems_);
-  ClpDisjointCopyN(m->getVectorLengths(),ncols_,  hincol_);
 
   // same thing for row rep
   CoinPackedMatrix * mRow = new CoinPackedMatrix();
-  mRow->reverseOrderedCopyOf(*m);
-  mRow->removeGaps();
   mRow->setExtraGap(0.0);
+  mRow->setExtraMajor(0.0);
+  mRow->reverseOrderedCopyOf(*m);
+  //mRow->removeGaps();
+  //mRow->setExtraGap(0.0);
 
   // Now get rid of matrix
   si->createEmptyMatrix();
@@ -1116,12 +1157,30 @@ CoinPresolveMatrix::CoinPresolveMatrix(int ncols0_in,
   delete [] strt;
   hinrow_ = new int[nrows_in+1];
   ClpDisjointCopyN(len, nrows_,  hinrow_);
+  if (nelems_>nel) {
+    nelems_ = nel;
+    // Clean any small elements
+    int irow;
+    nel=0;
+    CoinBigIndex start=0;
+    for (irow=0;irow<nrows_;irow++) {
+      CoinBigIndex j;
+      for (j=start;j<start+hinrow_[irow];j++) {
+	hcol_[nel]=hcol_[j];
+	if (fabs(rowels_[j])>ZTOLDP)
+	  rowels_[nel++]=rowels_[j];
+      }
+      start=mrstrt_[irow+1];
+      mrstrt_[irow+1]=nel;
+      hinrow_[irow]=nel-mrstrt_[irow];
+    }
+  }
 
   delete mRow;
   if (si->integerInformation()) {
-    CoinMemcpyN((unsigned char *) si->integerInformation(),ncols_,integerType_);
+    CoinMemcpyN(reinterpret_cast<unsigned char *> (si->integerInformation()),ncols_,integerType_);
   } else {
-    ClpFillN<unsigned char>(integerType_, ncols_, (unsigned char) 0);
+    ClpFillN<unsigned char>(integerType_, ncols_, static_cast<unsigned char> (0));
   }
 
 #ifndef SLIM_CLP
@@ -1206,6 +1265,8 @@ CoinPresolveMatrix::CoinPresolveMatrix(int ncols0_in,
   // this must come after the calls to presolve_prefix
   mcstrt_[ncols_] = bufsize-1;
   mrstrt_[nrows_] = bufsize-1;
+  // Allocate useful arrays
+  initializeStuff();
 
 #if	PRESOLVE_CONSISTENCY
 //consistent(false);
@@ -1227,7 +1288,7 @@ void CoinPresolveMatrix::update_model(ClpSimplex * si,
       numberIntegers++;
   }
   if (numberIntegers) 
-    si->copyInIntegerInformation((const char *) integerType_);
+    si->copyInIntegerInformation(reinterpret_cast<const char *> (integerType_));
   else
     si->copyInIntegerInformation(NULL);
 
@@ -1506,6 +1567,8 @@ ClpPresolve::gutsOfPresolvedModel(ClpSimplex * originalModel,
 
     // Do presolve
     paction_ = presolve(&prob);
+    // Get rid of useful arrays
+    prob.deleteStuff();
 
     result =0; 
 

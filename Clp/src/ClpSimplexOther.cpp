@@ -158,7 +158,9 @@ void ClpSimplexOther::dualRanging(int numberCheck,const int * which,
       break;
     }
     double scaleFactor;
+#ifdef CLP_AUXILIARY_MODEL
     if (!auxiliaryModel_) {
+#endif
       if (rowScale_) {
         if (iSequence<numberColumns_) 
           scaleFactor = 1.0/(objectiveScale_*columnScale_[iSequence]);
@@ -167,6 +169,7 @@ void ClpSimplexOther::dualRanging(int numberCheck,const int * which,
       } else {
         scaleFactor = 1.0/objectiveScale_;
       }
+#ifdef CLP_AUXILIARY_MODEL
     } else {
       if (auxiliaryModel_->rowScale()) {
         if (iSequence<numberColumns_) 
@@ -177,6 +180,7 @@ void ClpSimplexOther::dualRanging(int numberCheck,const int * which,
         scaleFactor = 1.0/objectiveScale_;
       }
     }
+#endif
     if (costIncrease<1.0e30)
       costIncrease *= scaleFactor;
     if (costDecrease<1.0e30)
@@ -741,7 +745,7 @@ ClpSimplexOther::readBasis(const char *fileName)
 ClpSimplex * 
 ClpSimplexOther::dualOfModel(double fractionRowRanges,double fractionColumnRanges) const
 {
-  const ClpSimplex * model2 = (const ClpSimplex *) this;
+  const ClpSimplex * model2 = static_cast<const ClpSimplex *> (this);
   bool changed=false;
   int numberChanged=0;
   int iColumn;
@@ -860,6 +864,7 @@ ClpSimplexOther::dualOfModel(double fractionRowRanges,double fractionColumnRange
     }
   }
   int kRow=0;
+  int kExtraRow=numberRows;
   for (iRow=0;iRow<numberRows;iRow++) {
     if (rowLower[iRow]<-1.0e20) {
       assert (rowUpper[iRow]<1.0e20);
@@ -888,11 +893,11 @@ ClpSimplexOther::dualOfModel(double fractionRowRanges,double fractionColumnRange
         fromRowsUpper[kRow]=0.0;
         which[kRow]=iRow;
         kRow++;
-        newObjective[kRow]=-rowLower[iRow];
-        fromRowsLower[kRow]=0.0;
-        fromRowsUpper[kRow]=COIN_DBL_MAX;
-        which[kRow]=iRow;
-        kRow++;
+        newObjective[kExtraRow]=-rowLower[iRow];
+        fromRowsLower[kExtraRow]=0.0;
+        fromRowsUpper[kExtraRow]=COIN_DBL_MAX;
+        which[kExtraRow]=iRow;
+        kExtraRow++;
       }
     }
   }
@@ -900,7 +905,7 @@ ClpSimplexOther::dualOfModel(double fractionRowRanges,double fractionColumnRange
     CoinPackedMatrix newCopy;
     newCopy.setExtraGap(0.0);
     newCopy.setExtraMajor(0.0);
-    newCopy.submatrixOfWithDuplicates(rowCopy,kRow,which);
+    newCopy.submatrixOfWithDuplicates(rowCopy,kExtraRow,which);
     rowCopy=newCopy;
   }
   ClpSimplex * modelDual = new ClpSimplex();
@@ -954,12 +959,13 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
   const double * dualSol = dualProblem->primalColumnSolution();
   const double * dualActs = dualProblem->primalRowSolution();
 #if 0
-  const double * primalDual = this->dualRowSolution();
-  const double * primalDj = this->dualColumnSolution();
-  const double * primalSol = this->primalColumnSolution();
-  const double * primalActs = this->primalRowSolution();
+  ClpSimplex thisCopy=*this;
+  thisCopy.dual(); // for testing
+  const double * primalDual = thisCopy.dualRowSolution();
+  const double * primalDj = thisCopy.dualColumnSolution();
+  const double * primalSol = thisCopy.primalColumnSolution();
+  const double * primalActs = thisCopy.primalRowSolution();
   char ss[]={'F','B','U','L','S','F'};
-  dual(); // for testing
   printf ("Dual problem row info %d rows\n",dualProblem->numberRows());
   for (iRow=0;iRow<dualProblem->numberRows();iRow++)
     printf("%d at %c primal %g dual %g\n",
@@ -970,19 +976,19 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
     printf("%d at %c primal %g dual %g\n",
            iColumn,ss[dualProblem->getColumnStatus(iColumn)],
            dualSol[iColumn],dualDj[iColumn]);
-  printf ("Primal problem row info %d rows\n",this->numberRows());
-  for (iRow=0;iRow<this->numberRows();iRow++)
+  printf ("Primal problem row info %d rows\n",thisCopy.numberRows());
+  for (iRow=0;iRow<thisCopy.numberRows();iRow++)
     printf("%d at %c primal %g dual %g\n",
-           iRow,ss[this->getRowStatus(iRow)],
+           iRow,ss[thisCopy.getRowStatus(iRow)],
            primalActs[iRow],primalDual[iRow]);
-  printf ("Primal problem column info %d columns\n",this->numberColumns());
-  for (iColumn=0;iColumn<this->numberColumns();iColumn++)
+  printf ("Primal problem column info %d columns\n",thisCopy.numberColumns());
+  for (iColumn=0;iColumn<thisCopy.numberColumns();iColumn++)
     printf("%d at %c primal %g dual %g\n",
-           iColumn,ss[this->getColumnStatus(iColumn)],
+           iColumn,ss[thisCopy.getColumnStatus(iColumn)],
            primalSol[iColumn],primalDj[iColumn]);
 #endif
   // position at bound information
-  int jColumn=numberRows_+numberExtraRows;
+  int jColumn=numberRows_;
   for (iColumn=0;iColumn<numberColumns_;iColumn++) {
     double objValue =optimizationDirection_*objective[iColumn];
     Status status = dualProblem->getRowStatus(iColumn);
@@ -1001,8 +1007,17 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
       if (otherValue==COIN_DBL_MAX) {
         reducedCost_[iColumn]=objValue-dualActs[iColumn];
         if (columnUpper_[iColumn]>1.0e20) {
-          setColumnStatus(iColumn,atLowerBound);
-          columnActivity_[iColumn]=columnLower_[iColumn];
+	  if (columnLower_[iColumn]>-1.0e20) {
+	    if (columnUpper_[iColumn]>columnLower_[iColumn])
+	      setColumnStatus(iColumn,atLowerBound);
+	    else
+	      setColumnStatus(iColumn,isFixed);
+	    columnActivity_[iColumn]=columnLower_[iColumn];
+	  } else {
+	    // free
+	    setColumnStatus(iColumn,isFree);
+	    columnActivity_[iColumn]=0.0;
+	  }
         } else {
           setColumnStatus(iColumn,atUpperBound);
           columnActivity_[iColumn]=columnUpper_[iColumn];
@@ -1011,10 +1026,16 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
         reducedCost_[iColumn]=objValue-dualActs[iColumn];
         //printf("other dual sol %g\n",otherValue);
         if (fabs(otherValue-columnLower_[iColumn])<1.0e-5) {
-          setColumnStatus(iColumn,atLowerBound);
+	  if (columnUpper_[iColumn]>columnLower_[iColumn])
+	    setColumnStatus(iColumn,atLowerBound);
+	  else
+	    setColumnStatus(iColumn,isFixed);
           columnActivity_[iColumn]=columnLower_[iColumn];
         } else if (fabs(otherValue-columnUpper_[iColumn])<1.0e-5) {
-          setColumnStatus(iColumn,atUpperBound);
+	  if (columnUpper_[iColumn]>columnLower_[iColumn])
+	    setColumnStatus(iColumn,atUpperBound);
+	  else
+	    setColumnStatus(iColumn,isFixed);
           columnActivity_[iColumn]=columnUpper_[iColumn];
         } else {
           abort();
@@ -1029,6 +1050,8 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
 	  columnActivity_[iColumn]=-dualDual[iColumn] + columnLower_[iColumn];
 	} else if (columnUpper_[iColumn]<1.0e20) {
 	  columnActivity_[iColumn]=-dualDual[iColumn] + columnUpper_[iColumn];
+	} else {
+	  columnActivity_[iColumn]=-dualDual[iColumn];
 	}
         reducedCost_[iColumn]=0.0;
       } else {
@@ -1038,15 +1061,24 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
           // column basic
           setColumnStatus(iColumn,basic);
           numberBasic++;
+	  //printf("Col %d otherV %g dualDual %g\n",iColumn,
+	  // otherValue,dualDual[iColumn]);
           columnActivity_[iColumn]=-dualDual[iColumn];
+          columnActivity_[iColumn]=otherValue;
           reducedCost_[iColumn]=0.0;
         } else {
           reducedCost_[iColumn]=objValue-dualActs[iColumn];
           if (fabs(otherValue-columnLower_[iColumn])<1.0e-5) {
-            setColumnStatus(iColumn,atLowerBound);
+	    if (columnUpper_[iColumn]>columnLower_[iColumn])
+	      setColumnStatus(iColumn,atLowerBound);
+	    else
+	      setColumnStatus(iColumn,isFixed);
             columnActivity_[iColumn]=columnLower_[iColumn];
           } else if (fabs(otherValue-columnUpper_[iColumn])<1.0e-5) {
-            setColumnStatus(iColumn,atUpperBound);
+	    if (columnUpper_[iColumn]>columnLower_[iColumn])
+	      setColumnStatus(iColumn,atUpperBound);
+	    else
+	      setColumnStatus(iColumn,isFixed);
             columnActivity_[iColumn]=columnUpper_[iColumn];
           } else {
             abort();
@@ -1056,13 +1088,13 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
     }
   }
   // now rows
-  int kRow=0;
+  int kExtraRow=jColumn;
   int numberRanges=0;
   for (iRow=0;iRow<numberRows_;iRow++) {
-    Status status = dualProblem->getColumnStatus(kRow);
+    Status status = dualProblem->getColumnStatus(iRow);
     if (status==basic) {
       // row is at bound
-      dual_[iRow]=dualSol[kRow];;
+      dual_[iRow]=dualSol[iRow];;
     } else {
       // row basic
       setRowStatus(iRow,basic);
@@ -1074,68 +1106,94 @@ ClpSimplexOther::restoreFromDual(const ClpSimplex * dualProblem)
         rowActivity_[iRow]=rowUpper_[iRow];
         setRowStatus(iRow,atUpperBound);
       } else {
-        rowActivity_[iRow]=rowUpper_[iRow]+dualSol[kRow];
+	assert (dualDj[iRow]<1.0e-5);
+        rowActivity_[iRow]=rowUpper_[iRow]+dualDj[iRow];
       }        
-      kRow++;
     } else if (rowUpper_[iRow]>1.0e20) {
       if (status==basic) {
         rowActivity_[iRow]=rowLower_[iRow];
         setRowStatus(iRow,atLowerBound);
       } else {
-        rowActivity_[iRow]=rowLower_[iRow]+dualSol[kRow];
+        rowActivity_[iRow]=rowLower_[iRow]+dualDj[iRow];
+	assert (dualDj[iRow]>-1.0e-5);
       }        
-      kRow++;
     } else {
       if (rowUpper_[iRow]==rowLower_[iRow]) {
         rowActivity_[iRow]=rowLower_[iRow];
         if (status==basic) {
-          setRowStatus(iRow,atLowerBound);
+          setRowStatus(iRow,isFixed);
         }        
-        kRow++;
       } else {
         // range
         numberRanges++;
-	Status statusL = dualProblem->getColumnStatus(kRow+1);
+	Status statusL = dualProblem->getColumnStatus(kExtraRow);
+	//printf("range row %d (%d), extra %d (%d) - dualSol %g,%g dualDj %g,%g\n",
+	//     iRow,status,kExtraRow,statusL, dualSol[iRow],
+	//     dualSol[kExtraRow],dualDj[iRow],dualDj[kExtraRow]);
 	if (status==basic) {
 	  assert (statusL!=basic);
 	  rowActivity_[iRow]=rowUpper_[iRow];
 	  setRowStatus(iRow,atUpperBound);
 	} else if (statusL==basic) {
+	  numberBasic--; // already counted
 	  rowActivity_[iRow]=rowLower_[iRow];
 	  setRowStatus(iRow,atLowerBound);
+	  dual_[iRow]=dualSol[kExtraRow];;
 	} else {
-	  rowActivity_[iRow]=rowLower_[iRow]+dualSol[kRow];
+	  rowActivity_[iRow]=rowLower_[iRow]-dualDj[iRow];
+	  assert (dualDj[iRow]<1.0e-5);
 	  // row basic
-	  setRowStatus(iRow,basic);
-	  numberBasic++;
+	  //setRowStatus(iRow,basic);
+	  //numberBasic++;
 	  dual_[iRow]=0.0;
 	}
-        kRow++;
-        kRow++;
+	kExtraRow++;
       }
     }
   }
-  if (numberRanges) {
-    printf("%d ranges - coding needed\n",numberRanges);
-    returnCode=1;
-  }
   if (numberBasic!=numberRows_) {
-    printf("Bad basis - ranges?\n");
+    printf("Bad basis - ranges - coding needed\n");
     assert (numberRanges);
+    abort();
   }
   if (optimizationDirection_<0.0) {
     for (iRow=0;iRow<numberRows_;iRow++) {
       dual_[iRow]=-dual_[iRow];
     }
-    for (iColumn=0;iColumn<numberColumns_;iColumn++) {
-      reducedCost_[iColumn]=-reducedCost_[iColumn];
-    }
   }
   // redo row activities
   memset(rowActivity_,0,numberRows_*sizeof(double));
-  matrix_->times(-1.0,columnActivity_,rowActivity_);
+  matrix_->times(1.0,columnActivity_,rowActivity_);
+  // redo reduced costs
+  memcpy(reducedCost_,this->objective(),numberColumns_*sizeof(double));
+  matrix_->transposeTimes(-1.0,dual_,reducedCost_);
   checkSolutionInternal();
-  return 1; //temp
+  // Below will go to ..DEBUG later
+#if 0 //ndef NDEBUG
+  // Check if correct
+  double * columnActivity = CoinCopyOfArray(columnActivity_,numberColumns_);
+  double * rowActivity = CoinCopyOfArray(rowActivity_,numberRows_);
+  double * reducedCost = CoinCopyOfArray(reducedCost_,numberColumns_);
+  double * dual = CoinCopyOfArray(dual_,numberRows_);
+  this->primal();
+  CoinRelFltEq eq(1.0e-5);
+  for (iRow=0;iRow<numberRows_;iRow++) {
+    assert(eq(dual[iRow],dual_[iRow]));
+  }
+  for (iColumn=0;iColumn<numberColumns_;iColumn++) {
+    assert(eq(columnActivity[iColumn],columnActivity_[iColumn]));
+  }
+  for (iRow=0;iRow<numberRows_;iRow++) {
+    assert(eq(rowActivity[iRow],rowActivity_[iRow]));
+  }
+  for (iColumn=0;iColumn<numberColumns_;iColumn++) {
+    assert(eq(reducedCost[iColumn],reducedCost_[iColumn]));
+  }
+  delete [] columnActivity;
+  delete [] rowActivity;
+  delete [] reducedCost;
+  delete [] dual;
+#endif
   return returnCode;
 }
 /* Does very cursory presolve.
@@ -1758,7 +1816,7 @@ ClpSimplexOther::parametrics(double startingTheta, double & endingTheta,double r
     
     // save data
     ClpDataSave data = saveData();
-    int returnCode = ((ClpSimplexDual *) this)->startupSolve(0,NULL,0);
+    int returnCode = reinterpret_cast<ClpSimplexDual *> (this)->startupSolve(0,NULL,0);
     int iRow,iColumn;
     double * chgUpper=NULL;
     double * chgLower=NULL;
@@ -1852,7 +1910,7 @@ ClpSimplexOther::parametrics(double startingTheta, double & endingTheta,double r
         }
       }
       double * saveDuals=NULL;
-      ((ClpSimplexDual *) this)->gutsOfDual(0,saveDuals,-1,data);
+      reinterpret_cast<ClpSimplexDual *> (this)->gutsOfDual(0,saveDuals,-1,data);
       assert (!problemStatus_);
       // Now do parametrics
       printf("at starting theta of %g objective value is %g\n",startingTheta,
@@ -1883,7 +1941,7 @@ ClpSimplexOther::parametrics(double startingTheta, double & endingTheta,double r
         }
       }
     }
-    ((ClpSimplexDual *) this)->finishSolve(0);
+    reinterpret_cast<ClpSimplexDual *> (this)->finishSolve(0);
     
     delete dualRowPivot_;
     dualRowPivot_ = savePivot;
@@ -2048,7 +2106,7 @@ ClpSimplexOther::parametricsLoop(double startingTheta, double & endingTheta,doub
     // Do iterations
     if (canTryQuick) {
       double * saveDuals=NULL;
-      ((ClpSimplexDual *)this)->whileIterating(saveDuals,0);
+      reinterpret_cast<ClpSimplexDual *> (this)->whileIterating(saveDuals,0);
     } else {
       whileIterating(startingTheta,  endingTheta, reportIncrement,
                      changeLower, changeUpper,
@@ -2241,7 +2299,7 @@ ClpSimplexOther::whileIterating(double startingTheta, double & endingTheta,doubl
       abort();
     // choose row to go out
     // dualRow will go to virtual row pivot choice algorithm
-    ((ClpSimplexDual *) this)->dualRow(-1);
+    reinterpret_cast<ClpSimplexDual *> ( this)->dualRow(-1);
     if (pivotRow_>=0) {
       // we found a pivot row
       if (handler_->detail(CLP_SIMPLEX_PIVOTROW,messages_)<100) {
@@ -2274,7 +2332,7 @@ ClpSimplexOther::whileIterating(double startingTheta, double & endingTheta,doubl
       matrix_->transposeTimes(this,-1.0,
 			      rowArray_[0],rowArray_[3],columnArray_[0]);
       // do ratio test for normal iteration
-      bestPossiblePivot = ((ClpSimplexDual *) this)->dualColumn(rowArray_[0],
+      bestPossiblePivot = reinterpret_cast<ClpSimplexDual *> ( this)->dualColumn(rowArray_[0],
                                                                 columnArray_[0],columnArray_[1],
                                                                 rowArray_[3],acceptablePivot,NULL);
       if (sequenceIn_>=0) {
@@ -2350,7 +2408,7 @@ ClpSimplexOther::whileIterating(double startingTheta, double & endingTheta,doubl
 	int nswapped = 0;
 	//rowArray_[0]->cleanAndPackSafe(1.0e-60);
 	//columnArray_[0]->cleanAndPackSafe(1.0e-60);
-        nswapped = ((ClpSimplexDual *) this)->updateDualsInDual(rowArray_[0],columnArray_[0],
+        nswapped = reinterpret_cast<ClpSimplexDual *> ( this)->updateDualsInDual(rowArray_[0],columnArray_[0],
                                      rowArray_[2],theta_,
                                      objectiveChange,false);
 
@@ -2426,7 +2484,7 @@ ClpSimplexOther::whileIterating(double startingTheta, double & endingTheta,doubl
 	    // make sure dual feasible
 	    // look at all rows and columns
 	    double objectiveChange=0.0;
-	    ((ClpSimplexDual *) this)->updateDualsInDual(rowArray_[0],columnArray_[0],rowArray_[1],
+	    reinterpret_cast<ClpSimplexDual *> ( this)->updateDualsInDual(rowArray_[0],columnArray_[0],rowArray_[1],
 			      0.0,objectiveChange,true);
 	    continue;
 	  }
@@ -2451,7 +2509,7 @@ ClpSimplexOther::whileIterating(double startingTheta, double & endingTheta,doubl
 	  theta_=0.0;
 	}
 	// do actual flips
-	((ClpSimplexDual *) this)->flipBounds(rowArray_[0],columnArray_[0],theta_);
+	reinterpret_cast<ClpSimplexDual *> ( this)->flipBounds(rowArray_[0],columnArray_[0],theta_);
 	//rowArray_[1]->expand();
 	dualRowPivot_->updatePrimalSolution(rowArray_[1],
 					    movement,
@@ -2482,8 +2540,8 @@ ClpSimplexOther::whileIterating(double startingTheta, double & endingTheta,doubl
 	solution_[sequenceOut_]=valueOut_;
 	int whatNext=housekeeping(objectiveChange);
 	// and set bounds correctly
-	((ClpSimplexDual *) this)->originalBound(sequenceIn_); 
-	((ClpSimplexDual *) this)->changeBound(sequenceOut_);
+	reinterpret_cast<ClpSimplexDual *> ( this)->originalBound(sequenceIn_); 
+	reinterpret_cast<ClpSimplexDual *> ( this)->changeBound(sequenceOut_);
 	if (whatNext==1) {
 	  problemStatus_ =-2; // refactorize
 	} else if (whatNext==2) {
@@ -2984,7 +3042,7 @@ ClpSimplexOther::expandKnapsack(int knapsackRow, int & numberOutput,
       gap=1.0e8;
     assert (fabs(floor(gap+0.5)-gap)<1.0e-5);
     whichColumn[numJ]=iColumn;
-    bound[numJ]=(int) gap;
+    bound[numJ]=static_cast<int> (gap);
     if (elementByRow[j]>0.0) {
       flip[numJ]=1;
       offset[numJ]=lowerColumn;

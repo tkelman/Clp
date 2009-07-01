@@ -10,9 +10,18 @@
 class ClpMatrixBase;
 class ClpSimplex;
 class ClpNetworkBasis;
-#define CLP_MULTIPLE_FACTORIZATIONS    
-#ifdef CLP_MULTIPLE_FACTORIZATIONS    
+#ifndef CLP_MULTIPLE_FACTORIZATIONS 
+#define CLP_MULTIPLE_FACTORIZATIONS 3
+#endif    
+#if CLP_MULTIPLE_FACTORIZATIONS == 1
 #include "CoinDenseFactorization.hpp"
+typedef CoinDenseFactorization CoinSmallFactorization;
+#elif CLP_MULTIPLE_FACTORIZATIONS == 2
+#include "CoinSimpFactorization.hpp"
+typedef CoinSimpFactorization CoinSmallFactorization;
+#elif CLP_MULTIPLE_FACTORIZATIONS == 3
+#include "CoinDenseFactorization.hpp"
+#include "CoinSimpFactorization.hpp"
 #endif
 
 /** This just implements CoinFactorization when an ClpMatrixBase object
@@ -53,13 +62,13 @@ public:
 
    /**@name Copy method */
    //@{
-   /** The copy constructor. */
-   ClpFactorization(const ClpFactorization&);
    /** The copy constructor from an CoinFactorization. */
    ClpFactorization(const CoinFactorization&);
+   /** The copy constructor. */
+  ClpFactorization(const ClpFactorization&,int denseIfSmaller=0);
 #ifdef CLP_MULTIPLE_FACTORIZATIONS    
-   /** The copy constructor from an CoinDenseFactorization. */
-   ClpFactorization(const CoinDenseFactorization&);
+   /** The copy constructor from an CoinSmallFactorization. */
+   ClpFactorization(const CoinSmallFactorization&);
 #endif
    ClpFactorization& operator=(const ClpFactorization&);
    //@}
@@ -175,14 +184,14 @@ public:
   /// Returns number of dense rows
   inline int numberDense() const
   { if (coinFactorizationA_) return coinFactorizationA_->numberDense(); else return 0 ;}
-#if 0
+#if 1
   /// Returns number in U area
   inline CoinBigIndex numberElementsU (  ) const {
-    if (coinFactorizationA_) return coinFactorizationA_->numberElementsU(); else return 0 ;
+    if (coinFactorizationA_) return coinFactorizationA_->numberElementsU(); else return -1 ;
   }
   /// Returns number in L area
   inline CoinBigIndex numberElementsL (  ) const {
-    if (coinFactorizationA_) return coinFactorizationA_->numberElementsL(); else return 0 ;
+    if (coinFactorizationA_) return coinFactorizationA_->numberElementsL(); else return -1 ;
   }
   /// Returns number in R area
   inline CoinBigIndex numberElementsR (  ) const {
@@ -268,10 +277,16 @@ public:
   /// Set switch to dense if number rows <= this
   inline void setGoDenseThreshold(int value)
   { goDenseThreshold_ = value;}
-  /// Go over to dense code
-  void goDense() ;
+  /// Get switch to small if number rows <= this
+  inline int goSmallThreshold() const
+  { return goSmallThreshold_;}
+  /// Set switch to small if number rows <= this
+  inline void setGoSmallThreshold(int value)
+  { goSmallThreshold_ = value;}
+  /// Go over to dense or small code if small enough
+  void goDenseOrSmall(int numberRows) ;
   /// Return 1 if dense code
-  inline int isDense() const
+  inline int isDenseOrSmall() const
   { return coinFactorizationB_ ? 1 : 0;}
 #else
   inline bool timeToRefactorize() const
@@ -326,8 +341,10 @@ private:
 #ifdef CLP_MULTIPLE_FACTORIZATIONS    
   /// Pointer to CoinFactorization 
   CoinFactorization * coinFactorizationA_;
-  /// Pointer to CoinDenseFactorization 
-  CoinDenseFactorization * coinFactorizationB_;
+  /// Pointer to CoinSmallFactorization 
+  CoinSmallFactorization * coinFactorizationB_;
+  /// Switch to small if number rows <= this
+  int goSmallThreshold_;
   /// Switch to dense if number rows <= this
   int goDenseThreshold_;
 #endif

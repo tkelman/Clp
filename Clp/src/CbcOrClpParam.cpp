@@ -33,6 +33,11 @@ static char coin_prompt[]="Coin:";
 #else
 static char coin_prompt[]="Clp:";
 #endif
+#if WSSMP_BARRIER>=2
+#ifndef CBC_THREAD
+#define CBC_THREAD
+#endif
+#endif
 static bool doPrinting=true;
 std::string afterEquals="";
 static char printArray[200];
@@ -334,7 +339,7 @@ CbcOrClpParam::printOptions (  ) const
     }
     std::cout<<" "<<thisOne;
   }
-  assert (currentKeyWord_>=0&&currentKeyWord_<(int)definedKeyWords_.size());
+  assert (currentKeyWord_>=0&&currentKeyWord_<static_cast<int>(definedKeyWords_.size()));
   std::string current = definedKeyWords_[currentKeyWord_];
   std::string::size_type  shriekPos = current.find('!');
   if ( shriekPos!=std::string::npos ) {
@@ -575,10 +580,12 @@ CbcOrClpParam::setIntParameterWithMessage ( ClpSimplex * model, int value ,int &
       break;
     case SPECIALOPTIONS:
       model->setSpecialOptions(value);
-#ifdef COIN_HAS_CBC
+#ifndef COIN_HAS_CBC
+#ifdef CBC_THREAD
     case THREADS:
       model->setNumberThreads(value);
       break;
+#endif
 #endif
     default:
       break;
@@ -610,8 +617,10 @@ CbcOrClpParam::intParameter (ClpSimplex * model) const
     value=model->specialOptions();
     break;
 #ifndef COIN_HAS_CBC
+#ifdef CBC_THREAD
   case THREADS:
     value = model->numberThreads();
+#endif
 #endif
   default:
     value=intValue_;
@@ -733,6 +742,10 @@ CbcOrClpParam::setDoubleParameterWithMessage ( CbcModel & model, double  value ,
       oldValue=model.getDblParam(CbcModel::CbcAllowableGap);
       model.setDblParam(CbcModel::CbcAllowableGap,value);
       break;
+    case GAPRATIO:
+      oldValue=model.getDblParam(CbcModel::CbcAllowableFractionGap);
+      model.setDblParam(CbcModel::CbcAllowableFractionGap,value);
+      break;
     case CUTOFF:
       oldValue=model.getCutoff();
       model.setCutoff(value);
@@ -772,8 +785,12 @@ CbcOrClpParam::doubleParameter (CbcModel &model) const
     break;
   case INCREMENT:
     value=model.getDblParam(CbcModel::CbcCutoffIncrement);
+    break;
   case ALLOWABLEGAP:
     value=model.getDblParam(CbcModel::CbcAllowableGap);
+    break;
+  case GAPRATIO:
+    value=model.getDblParam(CbcModel::CbcAllowableFractionGap);
     break;
   case CUTOFF:
     value=model.getCutoff();
@@ -1341,6 +1358,8 @@ possibilities."
   parameters[numberParameters-1].append("root");
   parameters[numberParameters-1].append("ifmove");
   parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
   parameters[numberParameters-1].setLonghelp
     (
      "This switches on clique cuts (either at root or in entire tree) \
@@ -1350,13 +1369,14 @@ See branchAndCut for information on options."
     CbcOrClpParam("combine!Solutions","Whether to use combine solution heuristic",
 		  "off",COMBINE);
   parameters[numberParameters-1].append("on");
-  parameters[numberParameters-1].append("do");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters-1].setLonghelp
     (
      "This switches on a heuristic which does branch and cut on the problem given by just \
 using variables which have appeared in one or more solutions. \
 It obviously only tries after two or more solutions. \
-The Do option switches on before preprocessing."
+See Rounding for meaning of on,both,before"
      ); 
   parameters[numberParameters++]=
     CbcOrClpParam("cost!Strategy","How to use costs as priorities",
@@ -1467,23 +1487,23 @@ See branchAndCut for information on options."
      "This will read a solution file from the given file name.  It will use the default\
  directory given by 'directory'.  A name of '$' will use the previous value for the name.  This\
  is initialized to '', i.e. it must be set.\n\n\
-If set to create it will create a file called debug.file  after search; if set \
-to createAfterPre it will create one suitable for use after preprocessing.\n\n\
-The idea is that if you suspect a bad cut generator and you did not use preprocessing \
+If set to create it will create a file called debug.file  after search.\n\n\
+The idea is that if you suspect a bad cut generator \
 you can do a good run with debug set to 'create' and then switch on the cuts you suspect and \
-re-run with debug set to 'debug.file'  Similarly if you do use preprocessing but use \
-createAfterPre.  The create case has same effect as saveSolution."
+re-run with debug set to 'debug.file'  The create case has same effect as saveSolution."
      ); 
 #endif 
 #ifdef COIN_HAS_CLP
+#if CLP_MULTIPLE_FACTORIZATIONS >0
   parameters[numberParameters++]=
     CbcOrClpParam("dense!Threshold","Whether to use dense factorization",
 		  -1,10000,DENSE,false);
   parameters[numberParameters-1].setLonghelp
     (
-     "If processed problem <= this use dense factorization (for testing)"
+     "If processed problem <= this use dense factorization"
      ); 
   parameters[numberParameters-1].setIntValue(-1);
+#endif
 #endif 
 #ifdef COIN_HAS_CBC
   parameters[numberParameters++]=
@@ -1503,13 +1523,20 @@ createAfterPre.  The create case has same effect as saveSolution."
 		  -COIN_DBL_MAX,COIN_DBL_MAX,DEXTRA4,false);
   parameters[numberParameters-1].setDoubleValue(0.0);
   parameters[numberParameters++]=
+    CbcOrClpParam("dextra5","Extra double parameter 5",
+		  -COIN_DBL_MAX,COIN_DBL_MAX,DEXTRA5,false);
+  parameters[numberParameters-1].setDoubleValue(0.0);
+  parameters[numberParameters++]=
       CbcOrClpParam("Dins","Whether to try Distance Induced Neighborhood Search",
 		    "off",DINS);
-    parameters[numberParameters-1].append("on");
-    parameters[numberParameters-1].append("often");
+  parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
+  parameters[numberParameters-1].append("often");
   parameters[numberParameters-1].setLonghelp
     (
-     "This switches on Distance induced neighborhood Search."
+     "This switches on Distance induced neighborhood Search. \
+See Rounding for meaning of on,both,before"
      ); 
 #endif
   parameters[numberParameters++]=
@@ -1577,36 +1604,51 @@ You can also use the parameters 'maximize' or 'minimize'."
       CbcOrClpParam("DivingS!ome","Whether to try Diving heuristics",
 		    "off",DIVINGS);
   parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters-1].setLonghelp
     (
      "This switches on a random diving heuristic at various times. \
 C - Coefficient, F - Fractional, G - Guided, L - LineSearch, P - PseudoCost, V - VectorLength. \
-You may prefer to use individual on/off"
+You may prefer to use individual on/off \
+See Rounding for meaning of on,both,before"
      ); 
   parameters[numberParameters++]=
       CbcOrClpParam("DivingC!oefficient","Whether to try DiveCoefficient",
 		    "off",DIVINGC);
   parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters++]=
       CbcOrClpParam("DivingF!ractional","Whether to try DiveFractional",
 		    "off",DIVINGF);
   parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters++]=
       CbcOrClpParam("DivingG!uided","Whether to try DiveGuided",
 		    "off",DIVINGG);
   parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters++]=
       CbcOrClpParam("DivingL!ineSearch","Whether to try DiveLineSearch",
 		    "off",DIVINGL);
   parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters++]=
       CbcOrClpParam("DivingP!seudoCost","Whether to try DivePseudoCost",
 		    "off",DIVINGP);
   parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters++]=
       CbcOrClpParam("DivingV!ectorLength","Whether to try DiveVectorLength",
 		    "off",DIVINGV);
   parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters++]=
     CbcOrClpParam("doH!euristic","Do heuristics before any preprocessing",
 		  DOHEURISTIC,3);
@@ -1754,16 +1796,18 @@ e.g. no ENDATA.  This has to be set before import i.e. -errorsAllowed on -import
     CbcOrClpParam("fakeB!ound","All bounds <= this value - DEBUG",
 		  1.0,1.0e15,FAKEBOUND,false);
 #ifdef COIN_HAS_CBC
-    parameters[numberParameters++]=
-      CbcOrClpParam("feas!ibilityPump","Whether to try Feasibility Pump",
-		    "off",FPUMP);
-    parameters[numberParameters-1].append("on");
-    parameters[numberParameters-1].append("do");
+  parameters[numberParameters++]=
+    CbcOrClpParam("feas!ibilityPump","Whether to try Feasibility Pump",
+		  "off",FPUMP);
+  parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters-1].setLonghelp
     (
-     "This switches on feasibility pump heuristic at root. This is due to Fischetti and Lodi \
+     "This switches on feasibility pump heuristic at root. This is due to Fischetti, Lodi and Glover \
 and uses a sequence of Lps to try and get an integer feasible solution. \
-Some fine tuning is available by passFeasibilityPump. Do options does heuristic before preprocessing"
+Some fine tuning is available by passFeasibilityPump and also pumpTune. \
+See Rounding for meaning of on,both,before"
      ); 
   parameters[numberParameters++]=
     CbcOrClpParam("fix!OnDj","Try heuristic based on fixing variables with \
@@ -1781,6 +1825,8 @@ before branch and bound - use with extreme caution!"
     parameters[numberParameters-1].append("root");
     parameters[numberParameters-1].append("ifmove");
     parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
     parameters[numberParameters-1].setLonghelp
     (
      "This switches on flow cover cuts (either at root or in entire tree) \
@@ -1815,7 +1861,10 @@ If 1 then also does that many nodes on fixed problem."
   parameters[numberParameters-1].append("root");
   parameters[numberParameters-1].append("ifmove");
   parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
   parameters[numberParameters-1].append("forceLongOn");
+  parameters[numberParameters-1].append("long");
   parameters[numberParameters-1].setLonghelp
     (
      "The original cuts - beware of imitations!  Having gone out of favor, they are now more \
@@ -1828,13 +1877,14 @@ See branchAndCut for information on options."
     CbcOrClpParam("greedy!Heuristic","Whether to use a greedy heuristic",
 		  "off",GREEDY);
   parameters[numberParameters-1].append("on");
-  parameters[numberParameters-1].append("do");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   //parameters[numberParameters-1].append("root");
   parameters[numberParameters-1].setLonghelp
     (
      "Switches on a greedy heuristic which will try and obtain a solution.  It may just fix a \
 percentage of variables and then try a small branch and cut run. \
-The Do option switches on before preprocessing."
+See Rounding for meaning of on,both,before"
      ); 
   parameters[numberParameters++]=
     CbcOrClpParam("heur!isticsOnOff","Switches most heuristics on or off",
@@ -1856,6 +1906,18 @@ alters search."
 you should be past that stage:-)"
      ); 
 #ifdef COIN_HAS_CBC
+  parameters[numberParameters++]=
+    CbcOrClpParam("hOp!tions","Heuristic options",
+		  -9999999,9999999,HOPTIONS);
+  parameters[numberParameters-1].setLonghelp
+    (
+     "1 says stop heuristic immediately allowable gap reached. \
+Others are for feasibility pump - \
+2 says do exact number of passes given, \
+4 only applies if initial cutoff given and says relax after 50 passes, \
+while 8 will adapt cutoff rhs after first solution if it looks as if code is stalling."
+     ); 
+  parameters[numberParameters-1].setIntValue(0);
   parameters[numberParameters++]=
     CbcOrClpParam("hot!StartMaxIts","Maximum iterations on hot start",
 		  0,COIN_INT_MAX,MAXHOTITS,false);
@@ -1942,6 +2004,8 @@ This needs to be set before the import of model - so -keepnames off -import xxxx
   parameters[numberParameters-1].append("root");
   parameters[numberParameters-1].append("ifmove");
   parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
   parameters[numberParameters-1].setLonghelp
     (
      "This switches on knapsack cuts (either at root or in entire tree) \
@@ -2056,6 +2120,8 @@ You can also use the parameters 'direction minimize'."
   parameters[numberParameters-1].append("root");
   parameters[numberParameters-1].append("ifmove");
   parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
   parameters[numberParameters-1].setLonghelp
     (
      "This switches on mixed integer rounding cuts (either at root or in entire tree) \
@@ -2085,6 +2151,16 @@ This is a first try and will hopefully become more sophisticated."
   parameters[numberParameters++]=
     CbcOrClpParam("miplib","Do some of miplib test set",
 		  MIPLIB,3);
+  parameters[numberParameters++]=
+      CbcOrClpParam("naive!Heuristics","Whether to try some stupid heuristic",
+		    "off",NAIVE);
+  parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
+  parameters[numberParameters-1].setLonghelp
+    (
+     "Really silly stuff e.g. fix all integers with costs to zero!. \
+Do options does heuristic before preprocessing"     ); 
 #endif 
 #ifdef COIN_HAS_CLP
   parameters[numberParameters++]=
@@ -2226,7 +2302,7 @@ stop if drop small if less than 5000 columns, 20 otherwise"
 #ifdef COIN_HAS_CBC
   parameters[numberParameters++]=
     CbcOrClpParam("passT!reeCuts","Number of cut passes in tree",
-		  -999999,999999,CUTPASSINTREE);
+		  -9999999,9999999,CUTPASSINTREE);
   parameters[numberParameters-1].setLonghelp
     (
      "The default is one pass"
@@ -2255,6 +2331,20 @@ stop if drop small if less than 5000 columns, 20 otherwise"
     (
      "By default clp uses Forrest-Tomlin L-U update.  If you are masochistic you can switch it off."
      ); 
+#endif 
+#ifdef COIN_HAS_CBC
+  parameters[numberParameters++]=
+      CbcOrClpParam("pivot!AndFix","Whether to try Pivot and Fix heuristic",
+		    "off",PIVOTANDFIX);
+  parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
+  parameters[numberParameters-1].setLonghelp
+    (
+     "stuff needed. \
+Do options does heuristic before preprocessing"     ); 
+#endif 
+#ifdef COIN_HAS_CLP
   parameters[numberParameters++]=
     CbcOrClpParam("plus!Minus","Tries to make +- 1 matrix",
 		  PLUSMINUS,7,false);
@@ -2424,6 +2514,8 @@ File is in csv format with allowed headings - name, number, priority, direction,
   parameters[numberParameters-1].append("root");
   parameters[numberParameters-1].append("ifmove");
   parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
   parameters[numberParameters-1].append("forceOnBut");
   parameters[numberParameters-1].append("forceOnStrong");
   parameters[numberParameters-1].append("forceOnButStrong");
@@ -2442,8 +2534,8 @@ but strong options do more probing"
      "This fine tunes Feasibility Pump \n\
 \t>=1000000 use as accumulate switch\n\
 \t>=1000 use index+1 as number of large loops\n\
-\t>=100 use 0.05 objvalue as increment\n\
-\t>=10 use +0.1 objvalue for cutoff (add)\n\
+\t==100 use objvalue +0.05*fabs(objvalue) as cutoff OR dextra1 if set\n\
+\t%100 == 10,20 etc for experimentation\n\
 \t1 == fix ints at bounds, 2 fix all integral ints, 3 and continuous at bounds"
      ); 
   parameters[numberParameters-1].setIntValue(0);
@@ -2457,6 +2549,16 @@ but strong options do more probing"
      ); 
 #ifdef COIN_HAS_CBC
   parameters[numberParameters++]=
+      CbcOrClpParam("rand!omizedRounding","Whether to try randomized rounding heuristic",
+		    "off",RANDROUND);
+  parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
+  parameters[numberParameters-1].setLonghelp
+    (
+     "stuff needed. \
+Do options does heuristic before preprocessing"     ); 
+  parameters[numberParameters++]=
     CbcOrClpParam("ratio!Gap","Stop when gap between best possible and \
 best less than this fraction of larger of two",
 		  0.0,1.0e20,GAPRATIO);
@@ -2467,6 +2569,9 @@ best less than this fraction of larger of two",
 of the objective value at the root node then the search will terminate.  See 'allowableGap' for a \
 way of using absolute value rather than fraction."
      ); 
+  parameters[numberParameters++]=
+    CbcOrClpParam("readS!tored","Import stored cuts from file",
+		  STOREDFILE,3,false);
 #endif
 #ifdef COIN_HAS_CLP
   parameters[numberParameters++]=
@@ -2539,6 +2644,8 @@ See branchAndCut for information on options."
       CbcOrClpParam("Rens","Whether to try Relaxation Enforced Neighborhood Search",
 		    "off",RENS);
     parameters[numberParameters-1].append("on");
+    parameters[numberParameters-1].append("both");
+    parameters[numberParameters-1].append("before");
     parameters[numberParameters-1].append("200");
     parameters[numberParameters-1].append("1000");
     parameters[numberParameters-1].append("10000");
@@ -2546,27 +2653,33 @@ See branchAndCut for information on options."
     (
      "This switches on Relaxation enforced neighborhood Search. \
 on just does feasibility pump \
-200 or 1000 does that many nodes."
-     ); 
+200 or 1000 does that many nodes. \
+Do options does heuristic before preprocessing"     ); 
   parameters[numberParameters++]=
       CbcOrClpParam("Rins","Whether to try Relaxed Induced Neighborhood Search",
 		    "off",RINS);
     parameters[numberParameters-1].append("on");
+    parameters[numberParameters-1].append("both");
+    parameters[numberParameters-1].append("before");
     parameters[numberParameters-1].append("often");
   parameters[numberParameters-1].setLonghelp
     (
-     "This switches on Relaxed induced neighborhood Search."
-     ); 
+     "This switches on Relaxed induced neighborhood Search. \
+Do options does heuristic before preprocessing"     ); 
   parameters[numberParameters++]=
     CbcOrClpParam("round!ingHeuristic","Whether to use Rounding heuristic",
 		  "off",ROUNDING);
   parameters[numberParameters-1].append("on");
-  parameters[numberParameters-1].append("do");
+  parameters[numberParameters-1].append("both");
+  parameters[numberParameters-1].append("before");
   parameters[numberParameters-1].setLonghelp
     (
      "This switches on a simple (but effective) rounding heuristic at each node of tree.  \
-The Do option switches on before preprocessing."
-     ); 
+On means do in solve i.e. after preprocessing, \
+Before means do if doHeuristics used, off otherwise, \
+and both means do if doHeuristics and in solve."
+     );
+
 #endif
   parameters[numberParameters++]=
     CbcOrClpParam("saveM!odel","Save model to binary file",
@@ -2640,6 +2753,16 @@ In this program it is really only useful for testing but the library function\n\
      "If you are solving a quadratic problem using primal then it may be helpful to do some \
 sequential Lps to get a good approximate solution."
      ); 
+#if CLP_MULTIPLE_FACTORIZATIONS > 0
+  parameters[numberParameters++]=
+    CbcOrClpParam("small!Factorization","Whether to use small factorization",
+		  -1,10000,SMALLFACT,false);
+  parameters[numberParameters-1].setLonghelp
+    (
+     "If processed problem <= this use small factorization"
+     ); 
+  parameters[numberParameters-1].setIntValue(-1);
+#endif
 #endif
   parameters[numberParameters++]=
     CbcOrClpParam("solu!tion","Prints solution to file",
@@ -2726,6 +2849,20 @@ this does branch and cut."
      ); 
 #ifdef COIN_HAS_CBC
   parameters[numberParameters++]=
+    CbcOrClpParam("strat!egy","Switches on groups of features",
+		  0,2,STRATEGY);
+  parameters[numberParameters-1].setLonghelp
+    (
+     "This turns on newer features. \
+Use 0 for easy problems, 1 is default, 2 is aggressive. \
+1 uses Gomory cuts using tolerance of 0.01 at root, \
+does a possible restart after 100 nodes if can fix many \
+and activates a diving and RINS heuristic and makes feasibility pump \
+more aggressive. \
+This does not apply to unit tests (where 'experiment' may have similar effects)."
+     ); 
+  parameters[numberParameters-1].setIntValue(1);
+  parameters[numberParameters++]=
     CbcOrClpParam("strengthen","Create strengthened problem",
 		  STRENGTHEN,3);
   parameters[numberParameters-1].setLonghelp
@@ -2763,12 +2900,13 @@ see number before trust."
 #ifdef CBC_THREAD
   parameters[numberParameters++]=
     CbcOrClpParam("thread!s","Number of threads to try and use",
-		  -100,10000,THREADS,false);
+		  -100,100000,THREADS,false);
   parameters[numberParameters-1].setLonghelp
     (
      "To use multiple threads, set threads to number wanted.  It may be better \
 to use one or two more than number of cpus available.  If 100+n then n threads and \
-threads used in sub-trees, if 200+n use threads for root cuts, 300+n - both."
+search is repeatable (maybe be somewhat slower), \
+if 200+n use threads for root cuts, 400+n threads used in sub-trees."
      ); 
 #endif
 #ifdef COIN_HAS_CBC
@@ -2817,6 +2955,8 @@ you would use 3010005 (I think)"
   parameters[numberParameters-1].append("root");
   parameters[numberParameters-1].append("ifmove");
   parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
   parameters[numberParameters-1].append("forceLongOn");
   parameters[numberParameters-1].setLonghelp
     (
@@ -2874,6 +3014,20 @@ Look for USERCBC in main driver and modify sample code."
      "If set will try and fix some integer variables"
      ); 
   parameters[numberParameters-1].setIntValue(-1);
+  parameters[numberParameters++]=
+    CbcOrClpParam("zero!HalfCuts","Whether to use zero half cuts",
+		  "off",ZEROHALFCUTS);
+  parameters[numberParameters-1].append("on");
+  parameters[numberParameters-1].append("root");
+  parameters[numberParameters-1].append("ifmove");
+  parameters[numberParameters-1].append("forceOn");
+  parameters[numberParameters-1].append("onglobal");
+  parameters[numberParameters-1].append("rootglobal");
+  parameters[numberParameters-1].setLonghelp
+    (
+     "This switches on knapsack cuts (either at root or in entire tree) \
+See branchAndCut for information on options."
+     ); 
 #endif 
   assert(numberParameters<CBCMAXPARAMETERS);
 }

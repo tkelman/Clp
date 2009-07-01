@@ -481,7 +481,7 @@ ClpSimplexNonlinear::statusOfProblemInPrimal(int & lastCleaned, int type,
 	  changeMade_++; // say change made
 	  if (numberTimesOptimal_==1) {
 	    // better to have small tolerance even if slower
-	    factorization_->zeroTolerance(1.0e-15);
+	    factorization_->zeroTolerance(CoinMin(factorization_->zeroTolerance(),1.0e-15));
 	  }
 	  lastCleaned=numberIterations_;
 	  if (primalTolerance_!=dblParam_[ClpPrimalTolerance])
@@ -1345,7 +1345,7 @@ ClpSimplexNonlinear::pivotColumn(CoinIndexedVector * longArray,
 #endif
 	if (solutionError<0.0) {
 	  solutionError=largest;
-	} else if (largest>max(1.0e-8,1.0e2*solutionError)&&
+	} else if (largest>CoinMax(1.0e-8,1.0e2*solutionError)&&
 		   factorization_->pivots()) {
 	  longArray->clear();
 	  pivotRow_ = -1;
@@ -2490,7 +2490,7 @@ ClpSimplexNonlinear::pivotNonlinearResult()
   } else if (updateStatus==2) {
     // major error
     // better to have small tolerance even if slower
-    factorization_->zeroTolerance(1.0e-15);
+    factorization_->zeroTolerance(CoinMin(factorization_->zeroTolerance(),1.0e-15));
     int maxFactor = factorization_->maximumPivots();
     if (maxFactor>10) {
       if (forceFactorization_<0)
@@ -3038,7 +3038,9 @@ ClpSimplexNonlinear::primalSLP(int numberPasses, double deltaTolerance)
     // could do faster
     trueObjective->stepLength(this,solution,changeRegion,0.0,
 					     objValue,predictedObj,thetaObj);
+#ifdef CLP_INVESTIGATE
     printf("offset comp %g orig %g - obj from stepLength %g\n",offset,objectiveOffset,objValue);
+#endif
     setDblParam(ClpObjOffset,objectiveOffset+offset);
     int * temp=last[2];
     last[2]=last[1];
@@ -3881,7 +3883,7 @@ ClpSimplexNonlinear::primalSLP(int numberConstraints, ClpConstraint ** constrain
 	CoinMemcpyN(saveSolution,numberColumns2,solution);
 	CoinMemcpyN(saveSolution+numberColumns2,
 		    numberRows,newModel.primalRowSolution());
-	CoinMemcpyN((unsigned char *) saveStatus,
+	CoinMemcpyN(reinterpret_cast<unsigned char *> (saveStatus),
 		    numberColumns2+numberRows,newModel.statusArray());
 	for (jNon=0;jNon<numberNonLinearColumns;jNon++) 
 	  if (trust[jNon]>0.1)
@@ -4000,7 +4002,8 @@ ClpSimplexNonlinear::primalSLP(int numberConstraints, ClpConstraint ** constrain
     CoinMemcpyN(newModel.primalRowSolution(),
 		numberRows,saveSolution+numberColumns2);
     CoinMemcpyN(newModel.statusArray(),
-		numberColumns2+numberRows,(unsigned char *) saveStatus);
+		numberColumns2+numberRows,
+		reinterpret_cast<unsigned char *> (saveStatus));
     
     targetDrop=infPenalty+infPenalty2;
     if (iPass) {

@@ -18,10 +18,11 @@
 class ClpDualRowPivot;
 class ClpPrimalColumnPivot;
 class ClpFactorization;
+#include "ClpFactorization.hpp"
 class CoinIndexedVector;
 class ClpNonLinearCost;
 class ClpNodeStuff;
-class CoinModel;
+class CoinStructuredModel;
 class OsiClpSolverInterface;
 class CoinWarmStartBasis;
 class ClpDisasterHandler;
@@ -64,9 +65,9 @@ public:
   // For Dual
   enum FakeBound {
     noFake = 0x00,
-    bothFake = 0x01,
+    lowerFake = 0x01,
     upperFake = 0x02,
-    lowerFake = 0x03
+    bothFake = 0x03
   };
 
   /**@name Constructors and destructor and copy */
@@ -120,6 +121,7 @@ public:
       2 as 1 but give a bit extra if bigger needed
   */
   void setPersistenceFlag(int value);
+#ifdef CLP_AUXILIARY_MODEL
   /**
      If you are re-using the same matrix again and again then the setup time
      to do scaling may be significant.  Also you may not want to initialize all values
@@ -139,6 +141,7 @@ public:
   /// See if we have auxiliary model
   inline bool usingAuxiliaryModel() const
   { return auxiliaryModel_!=NULL;}
+#endif
   /// Save a copy of model with certain state - normally without cuts
   void makeBaseModel();
   /// Switch off base model
@@ -290,6 +293,16 @@ public:
   /** Solves non-linear using reduced gradient.  Phase = 0 get feasible,
       =1 use solution */
   int reducedGradient(int phase=0);
+  /// Solve using structure of model and maybe in parallel
+  int solve(CoinStructuredModel * model);
+  /** This loads a model from a CoinStructuredModel object - returns number of errors.
+      If originalOrder then keep to order stored in blocks,
+      otherwise first column/rows correspond to first block - etc.
+      If keepSolution true and size is same as current then
+      keeps current status and solution
+  */
+  int loadProblem (  CoinStructuredModel & modelObject,
+		     bool originalOrder=true,bool keepSolution=false);
   /**
      When scaling is on it is possible that the scaled problem
      is feasible but the unscaled is not.  Clp returns a secondary
@@ -537,6 +550,8 @@ public:
   /// Set algorithm
   inline void setAlgorithm(int value)
   {algorithm_=value; } 
+  /// Return true if the objective limit test can be relied upon
+  bool isObjectiveLimitTestValid() const ;
   /// Sum of dual infeasibilities
   inline double sumDualInfeasibilities() const 
           { return sumDualInfeasibilities_;} 
@@ -694,6 +709,15 @@ protected:
   void checkDualSolution();
   /** This sets sum and number of infeasibilities (Dual and Primal) */
   void checkBothSolutions();
+  /**  If input negative scales objective so maximum <= -value
+       and returns scale factor used.  If positive unscales and also
+       redoes dual stuff
+  */
+  double scaleObjective(double value);
+  /// Solve using Dantzig-Wolfe decomposition and maybe in parallel
+  int solveDW(CoinStructuredModel * model);
+  /// Solve using Benders decomposition and maybe in parallel
+  int solveBenders(CoinStructuredModel * model);
 public:
   /** For advanced use.  When doing iterative solves things can get
       nasty so on values pass if incoming solution has largest
@@ -717,9 +741,12 @@ public:
   inline void setAlphaAccuracy(double value)
           { alphaAccuracy_ = value;} 
 public:
-  /// Disaster handler
+  /// Set disaster handler
   inline void setDisasterHandler(ClpDisasterHandler * handler)
   { disasterArea_= handler;}
+  /// Get disaster handler
+  inline ClpDisasterHandler * disasterHandler() const
+  { return disasterArea_;}
   /// Large bound value (for complementarity etc)
   inline double largeValue() const 
           { return largeValue_;} 
@@ -736,6 +763,12 @@ public:
   /// Largest error on basic duals
   inline void setLargestDualError(double value)
           { largestDualError_=value;} 
+  /// Get zero tolerance
+  inline double zeroTolerance() const 
+  { return zeroTolerance_;/*factorization_->zeroTolerance();*/} 
+  /// Set zero tolerance
+  inline void setZeroTolerance( double value)
+  { zeroTolerance_ = value;}
   /// Basic variables pivoting on which rows
   inline int * pivotVariable() const
           { return pivotVariable_;}
@@ -924,6 +957,8 @@ public:
       2 bit - if presolved problem infeasible return
       4 bit - keep arrays like upper_ around
       8 bit - if factorization kept can still declare optimal at once
+      16 bit - if checking replaceColumn accuracy before updating
+      32 bit - say optimal if primal feasible!
   */
   inline int moreSpecialOptions() const
   { return moreSpecialOptions_;}
@@ -998,7 +1033,7 @@ public:
   {return lastBadIteration_;}
   /// Progress flag - at present 0 bit says artificials out
   inline int progressFlag() const
-  {return progressFlag_;}
+  {return (progressFlag_&3);}
   /// Force re-factorization early 
   inline void forceFactorization(int value)
   { forceFactorization_ = value;}
@@ -1145,10 +1180,11 @@ protected:
    single array is the owner of memory 
   */
   //@{
-  /// Worst column primal infeasibility
-  double columnPrimalInfeasibility_;
-  /// Worst row primal infeasibility
-  double rowPrimalInfeasibility_;
+  /** Best possible improvement using djs (primal) or 
+      obj change by flipping bounds to make dual feasible (dual) */
+  double bestPossibleImprovement_;
+  /// Zero tolerance
+  double zeroTolerance_;
   /// Sequence of worst (-1 if feasible)
   int columnPrimalSequence_;
   /// Sequence of worst (-1 if feasible)
@@ -1257,8 +1293,10 @@ protected:
   double * rowActivityWork_;
   /// Column activities - working copy
   double * columnActivityWork_;
+#ifdef CLP_AUXILIARY_MODEL
   /// Auxiliary model
   ClpSimplex * auxiliaryModel_;
+#endif
   /// Number of dual infeasibilities
   int numberDualInfeasibilities_;
   /// Number of dual infeasibilities (without free)
@@ -1337,6 +1375,10 @@ protected:
   double allowedInfeasibility_;
   /// Automatic scaling of objective and rhs and bounds
   int automaticScale_;
+  /// Maximum perturbation array size (take out when code rewritten)
+  int maximumPerturbationSize_;
+  /// Perturbation array (maximumPerturbationSize_)
+  double * perturbationArray_;
   /// A copy of model with certain state - normally without cuts
   ClpSimplex * baseModel_;
   /// For dealing with all issues of cycling etc

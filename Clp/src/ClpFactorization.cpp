@@ -76,7 +76,8 @@ ClpFactorization::ClpFactorization () :
 //-------------------------------------------------------------------
 // Copy constructor 
 //-------------------------------------------------------------------
-ClpFactorization::ClpFactorization (const ClpFactorization & rhs) :
+ClpFactorization::ClpFactorization (const ClpFactorization & rhs,
+				    int dummyDenseIfSmaller) :
    CoinFactorization(rhs) 
 {
 #ifndef SLIM_CLP
@@ -675,8 +676,12 @@ ClpFactorization::factorize ( ClpSimplex * model,
     // take out part if quadratic
     if (model->algorithm()==2) {
       ClpObjective * obj = model->objectiveAsObject();
+#ifndef NDEBUG
       ClpQuadraticObjective * quadraticObj = (dynamic_cast< ClpQuadraticObjective*>(obj));
       assert (quadraticObj);
+#else
+      ClpQuadraticObjective * quadraticObj = (static_cast< ClpQuadraticObjective*>(obj));
+#endif
       CoinPackedMatrix * quadratic = quadraticObj->quadraticObjective();
       int numberXColumns = quadratic->getNumCols();
       assert (numberXColumns<numberColumns);
@@ -1112,14 +1117,16 @@ ClpFactorization::ClpFactorization ()
   //coinFactorizationA_ = NULL;
   coinFactorizationA_ = new CoinFactorization() ;
   coinFactorizationB_ = NULL;
-  //coinFactorizationB_ = new CoinDenseFactorization();
+  //coinFactorizationB_ = new CoinSmallFactorization();
   goDenseThreshold_ = -1;
+  goSmallThreshold_ = -1;
 }
 
 //-------------------------------------------------------------------
 // Copy constructor 
 //-------------------------------------------------------------------
-ClpFactorization::ClpFactorization (const ClpFactorization & rhs) 
+ClpFactorization::ClpFactorization (const ClpFactorization & rhs,
+				    int denseIfSmaller) 
 {
 #ifdef CLP_FACTORIZATION_INSTRUMENT
   factorization_instrument(-1);
@@ -1130,15 +1137,46 @@ ClpFactorization::ClpFactorization (const ClpFactorization & rhs)
   else
     networkBasis_=NULL;
 #endif
-  if (rhs.coinFactorizationA_)
+  goDenseThreshold_ = rhs.goDenseThreshold_;
+  goSmallThreshold_ = rhs.goSmallThreshold_;
+  int goDense = 0;
+  if (denseIfSmaller>0&&!rhs.coinFactorizationB_) {
+    if (denseIfSmaller<=goDenseThreshold_) 
+      goDense=1;
+    else if (denseIfSmaller<=goSmallThreshold_) 
+      goDense=2;
+  } else if (denseIfSmaller<0) {
+    if (-denseIfSmaller<=goDenseThreshold_) 
+      goDense=1;
+    else if (-denseIfSmaller<=goSmallThreshold_) 
+      goDense=2;
+  }
+  if (rhs.coinFactorizationA_&&!goDense)
     coinFactorizationA_ = new CoinFactorization(*(rhs.coinFactorizationA_));
   else
     coinFactorizationA_=NULL;
-  if (rhs.coinFactorizationB_)
-    coinFactorizationB_ = new CoinDenseFactorization(*(rhs.coinFactorizationB_));
+  if (rhs.coinFactorizationB_&&(denseIfSmaller>=0||!goDense))
+    coinFactorizationB_ = rhs.coinFactorizationB_->clone();
   else
     coinFactorizationB_=NULL;
-  goDenseThreshold_ = rhs.goDenseThreshold_;
+  if (goDense) {
+    delete coinFactorizationB_;
+    if (goDense==1)
+      coinFactorizationB_ = new CoinDenseFactorization();
+    else
+      coinFactorizationB_ = new CoinSimpFactorization();
+    if (rhs.coinFactorizationA_) {
+      coinFactorizationB_->maximumPivots(rhs.coinFactorizationA_->maximumPivots());
+      coinFactorizationB_->pivotTolerance(rhs.coinFactorizationA_->pivotTolerance());
+      coinFactorizationB_->zeroTolerance(rhs.coinFactorizationA_->zeroTolerance());
+    } else {
+      assert (coinFactorizationB_);
+      coinFactorizationB_->maximumPivots(rhs.coinFactorizationB_->maximumPivots());
+      coinFactorizationB_->pivotTolerance(rhs.coinFactorizationB_->pivotTolerance());
+      coinFactorizationB_->zeroTolerance(rhs.coinFactorizationB_->zeroTolerance());
+    }
+  }
+  assert (!coinFactorizationA_||!coinFactorizationB_);
 #ifdef CLP_FACTORIZATION_INSTRUMENT
   factorization_instrument(1);
 #endif
@@ -1156,11 +1194,13 @@ ClpFactorization::ClpFactorization (const CoinFactorization & rhs)
   coinFactorizationB_=NULL;
 #ifdef CLP_FACTORIZATION_INSTRUMENT
   factorization_instrument(1);
-  goDenseThreshold_ = -1;
 #endif
+  goDenseThreshold_ = -1;
+  goSmallThreshold_ = -1;
+  assert (!coinFactorizationA_||!coinFactorizationB_);
 }
 
-ClpFactorization::ClpFactorization (const CoinDenseFactorization & rhs) 
+ClpFactorization::ClpFactorization (const CoinSmallFactorization & rhs) 
 {
 #ifdef CLP_FACTORIZATION_INSTRUMENT
   factorization_instrument(-1);
@@ -1169,11 +1209,14 @@ ClpFactorization::ClpFactorization (const CoinDenseFactorization & rhs)
   networkBasis_=NULL;
 #endif
   coinFactorizationA_ = NULL;
-  coinFactorizationB_ = new CoinDenseFactorization(rhs);
+  coinFactorizationB_ = rhs.clone();
+  //coinFactorizationB_ = new CoinSmallFactorization(rhs);
   goDenseThreshold_ = -1;
+  goSmallThreshold_ = -1;
 #ifdef CLP_FACTORIZATION_INSTRUMENT
   factorization_instrument(1);
 #endif
+  assert (!coinFactorizationA_||!coinFactorizationB_);
 }
 
 //-------------------------------------------------------------------
@@ -1206,30 +1249,44 @@ ClpFactorization::operator=(const ClpFactorization& rhs)
       networkBasis_=NULL;
 #endif
     delete coinFactorizationA_;
+    goDenseThreshold_ = rhs.goDenseThreshold_;
+    goSmallThreshold_ = rhs.goSmallThreshold_;
     if (rhs.coinFactorizationA_)
       coinFactorizationA_ = new CoinFactorization(*(rhs.coinFactorizationA_));
     else
       coinFactorizationA_=NULL;
     delete coinFactorizationB_;
-    if (rhs.coinFactorizationB_)
-      coinFactorizationB_ = new CoinDenseFactorization(*(rhs.coinFactorizationB_));
-    else
+    if (rhs.coinFactorizationB_) {
+      coinFactorizationB_ = rhs.coinFactorizationB_->clone();
+      //coinFactorizationB_ = new CoinSmallFactorization(*(rhs.coinFactorizationB_));
+    } else {
       coinFactorizationB_=NULL;
+    }
   }
 #ifdef CLP_FACTORIZATION_INSTRUMENT
   factorization_instrument(1);
 #endif
+  assert (!coinFactorizationA_||!coinFactorizationB_);
   return *this;
 }
 // Go over to dense code
 void 
-ClpFactorization::goDense() 
+ClpFactorization::goDenseOrSmall(int numberRows) 
 {
-  delete coinFactorizationA_;
-  delete coinFactorizationB_;
-  coinFactorizationA_ = NULL;
-  coinFactorizationB_ = new CoinDenseFactorization();
-  //printf("going dense\n");
+  if (numberRows<=goDenseThreshold_) {
+    delete coinFactorizationA_;
+    delete coinFactorizationB_;
+    coinFactorizationA_ = NULL;
+    coinFactorizationB_ = new CoinDenseFactorization();
+    //printf("going dense\n");
+  } else if (numberRows<=goSmallThreshold_) {
+    delete coinFactorizationA_;
+    delete coinFactorizationB_;
+    coinFactorizationA_ = NULL;
+    coinFactorizationB_ = new CoinSimpFactorization();
+    //printf("going small\n");
+  }
+  assert (!coinFactorizationA_||!coinFactorizationB_);
 }
 int 
 ClpFactorization::factorize ( ClpSimplex * model,
@@ -1244,9 +1301,11 @@ ClpFactorization::factorize ( ClpSimplex * model,
   factorization_instrument(-1);
 #endif
   if (coinFactorizationB_) {
-    setStatus(-99);
+    coinFactorizationB_->setStatus(-99);
     int * pivotVariable = model->pivotVariable();
     //returns 0 -okay, -1 singular, -2 too many in basis */
+    // allow dense
+    coinFactorizationB_->setSolveMode(-1);
     while (status()<-98) {
       
       int i;
@@ -1334,7 +1393,7 @@ ClpFactorization::factorize ( ClpSimplex * model,
 				      2 * numberElements );
       // Fill in counts so we can skip part of preProcess
       // This is NOT needed for dense but would be needed for later versions
-      double * elementU;
+      CoinFactorizationDouble * elementU;
       int * indexRowU;
       CoinBigIndex * startColumnU;
       int * numberInRow;
@@ -1382,8 +1441,14 @@ ClpFactorization::factorize ( ClpSimplex * model,
 	numberElements=0;
       coinFactorizationB_->preProcess ( );
       coinFactorizationB_->factor (  );
+      if (coinFactorizationB_->status() == -1 &&
+	  coinFactorizationB_->solveMode()!=0) {
+	coinFactorizationB_->setSolveMode(0);
+	coinFactorizationB_->setStatus(-99);
+	continue;
+      }
       // If we get here status is 0 or -1
-      if (status() == 0&&numberBasic==numberRows) {
+      if (coinFactorizationB_->status() == 0&&numberBasic==numberRows) {
 	coinFactorizationB_->postProcess(pivotTemp,pivotVariable);
       } else {
 	// Change pivotTemp to be correct list
@@ -1714,7 +1779,7 @@ ClpFactorization::factorize ( ClpSimplex * model,
 	int * numberInColumn = coinFactorizationA_->numberInColumn();
 	CoinZeroN ( numberInRow, coinFactorizationA_->numberRows() + 1 );
 	CoinZeroN ( numberInColumn, coinFactorizationA_->maximumColumnsExtra() + 1 );
-	double * elementU = coinFactorizationA_->elementU();
+	CoinFactorizationDouble * elementU = coinFactorizationA_->elementU();
 	int * indexRowU = coinFactorizationA_->indexRowU();
 	CoinBigIndex * startColumnU = coinFactorizationA_->startColumnU();
 #ifndef COIN_FAST_CODE
@@ -2002,8 +2067,12 @@ ClpFactorization::factorize ( ClpSimplex * model,
     // take out part if quadratic
     if (model->algorithm()==2) {
       ClpObjective * obj = model->objectiveAsObject();
+#ifndef NDEBUG
       ClpQuadraticObjective * quadraticObj = (dynamic_cast< ClpQuadraticObjective*>(obj));
       assert (quadraticObj);
+#else
+      ClpQuadraticObjective * quadraticObj = (static_cast< ClpQuadraticObjective*>(obj));
+#endif
       CoinPackedMatrix * quadratic = quadraticObj->quadraticObjective();
       int numberXColumns = quadratic->getNumCols();
       assert (numberXColumns<numberColumns);
@@ -2312,11 +2381,27 @@ ClpFactorization::updateTwoColumnsFT ( CoinIndexedVector * regionSparse1,
       }
       coinFactorizationA_->setCollectStatistics(false);
     } else {
-      returnCode= coinFactorizationB_->updateColumnFT(regionSparse1,
-						     regionSparse2);
-      coinFactorizationB_->updateColumn(regionSparse1,
-					regionSparse3,
-					noPermuteRegion3);
+#if 0
+      CoinSimpFactorization * fact =
+	dynamic_cast< CoinSimpFactorization*>(coinFactorizationB_);
+      if (!fact) {
+	returnCode= coinFactorizationB_->updateColumnFT(regionSparse1,
+							regionSparse2);
+	coinFactorizationB_->updateColumn(regionSparse1,
+					  regionSparse3,
+					  noPermuteRegion3);
+      } else {
+	returnCode= fact->updateTwoColumnsFT(regionSparse1,
+					     regionSparse2,
+					     regionSparse3,
+					     noPermuteRegion3);
+      }
+#else
+      returnCode= coinFactorizationB_->updateTwoColumnsFT(regionSparse1,
+							  regionSparse2,
+							  regionSparse3,
+							  noPermuteRegion3);
+#endif
     }
 #ifdef CLP_FACTORIZATION_INSTRUMENT
     factorization_instrument(9);

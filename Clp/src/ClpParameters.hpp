@@ -79,7 +79,7 @@ enum ClpStrParam {
 template <class T> inline void
 ClpDisjointCopyN( const T * array, const int size, T * newArray)
 {
-  memcpy((void *) newArray,array,size*sizeof(T));
+  memcpy(reinterpret_cast<void *> (newArray),array,size*sizeof(T));
 }
 /// And set
 template <class T> inline void
@@ -113,4 +113,10 @@ ClpCopyOfArray( const T * array, const int size)
     return NULL;
   }
 }
+/// For a structure to be used by trusted code
+typedef struct {
+  int typeStruct; // allocated as 1,2 etc
+  int typeCall;
+  void * data;
+} ClpTrustedData;
 #endif
